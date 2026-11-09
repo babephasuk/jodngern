@@ -1,9 +1,12 @@
 // แคชเฉพาะไฟล์หน้าแอป (ไม่มีข้อมูลเงิน) เพื่อให้เปิดเร็ว คำขอไป Apps Script ไม่ผ่านแคช
-var CACHE = 'jodngern-2.1.0';
+var CACHE = 'jodngern-2.2.0';
 var SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './icon-180.png'];
 
 self.addEventListener('install', function (e) {
-  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));
+  // cache:'reload' = ข้ามแคชของเบราว์เซอร์ ให้ได้ไฟล์ใหม่จาก GitHub จริง ๆ ตอนอัปเดตเวอร์ชัน
+  e.waitUntil(caches.open(CACHE).then(function (c) {
+    return c.addAll(SHELL.map(function (u) { return new Request(u, { cache: 'reload' }); }));
+  }).then(function () { return self.skipWaiting(); }));
 });
 
 self.addEventListener('activate', function (e) {

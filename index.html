@@ -123,12 +123,31 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
 .linkbtn{display:block;margin:22px auto 0;color:var(--muted);text-decoration:underline;font-size:14px}
 .small{font-size:13px}
 body.locked > :not(#gate){visibility:hidden}
+/* 2.5: โครงรอโหลด รายการรอส่ง ป้ายสถานะ */
+.sk{display:flex;align-items:center;gap:10px;padding:12px 4px;border-top:1px solid var(--line)}
+.sk:first-child{border-top:0}
+.sk i{display:block;height:12px;border-radius:6px;background:linear-gradient(90deg,var(--line) 25%,var(--brand-soft) 50%,var(--line) 75%);background-size:300% 100%;animation:shim 1.2s linear infinite}
+.sk .c{width:28px;height:28px;border-radius:50%}
+@keyframes shim{0%{background-position:100% 0}100%{background-position:0 0}}
+@media (prefers-reduced-motion: reduce){ .sk i{animation:none} }
+.tx.pending .t1::after{content:' ⏳';font-weight:400}
+.tx.failed .t1::after{content:' ⚠️';font-weight:400}
+.tx.pending .amt{opacity:.7}
+.hdr{display:flex;align-items:center;gap:6px}
+.syncbtn{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:5px 10px;font-size:13px;white-space:nowrap}
+.syncbtn.bad{border-color:var(--exp);color:var(--exp);font-weight:600}
+.note-bar{font-size:13px;color:var(--muted);background:var(--brand-soft);border-radius:10px;padding:8px 10px;margin:0 0 10px;display:flex;gap:8px;align-items:center}
+.note-bar.bad{color:var(--exp)}
+.note-bar button{margin-left:auto;text-decoration:underline;font-size:13px}
+.perf td{padding:5px 2px;font-size:14px;border-bottom:1px solid var(--line)}
+.perf td:last-child{text-align:right;white-space:nowrap}
+.perf table{width:100%;border-collapse:collapse}
 </style>
 </head>
 <body>
 <header>
   <h1 id="title">เพิ่มรายการ</h1>
-  <button class="iconbtn" id="btnSet" aria-label="ตั้งค่า">⚙️</button>
+  <div class="hdr"><button class="syncbtn" id="btnSync" hidden></button><button class="iconbtn" id="btnSet" aria-label="ตั้งค่า">⚙️</button></div>
 </header>
 
 <main>
@@ -136,6 +155,7 @@ body.locked > :not(#gate){visibility:hidden}
 
   <!-- หน้าเพิ่มรายการ -->
   <section id="v-add" hidden>
+    <div class="note-bar" id="bootBar" hidden></div>
     <div class="card" id="addForm"></div>
     <button class="ghost" id="btnPayday" style="width:100%;margin-bottom:12px">💰 ชุดรายการวันเงินเดือน</button>
     <div class="card">
@@ -326,29 +346,110 @@ function unb64u(str){
   return out;
 }
 function shortUrl(u){ var m = /\/s\/([A-Za-z0-9_-]+)\/exec/.exec(u || ''); return m ? '…/s/' + m[1].slice(0,6) + '…' + m[1].slice(-4) + '/exec' : ''; }
+
+/* ---------- ที่จำรายการในหน่วยความจำ (ปิดแอปแล้วหาย ไม่เขียนลงเครื่อง) ----------
+   tx: รายการที่ยืนยันจากชีตแล้ว, cov: ช่วงวันที่ที่รู้ครบแล้ว [{s,e,at}],
+   touched/gone: เวลาที่แอปเพิ่ม/แก้/ลบเอง ใช้กันข้อมูลเก่าที่ขอไว้ก่อนหน้ามาทับของใหม่ */
+function newStore(){ return { tx:{}, cov:[], touched:{}, gone:{} }; }
+/** คืนเวลาที่ข้อมูลช่วง s..e ใหม่ที่สุด (0 = ยังไม่รู้ครบ ต้องขอจากชีต) */
+function storeCovered(st, s, e){
+  var best = 0;
+  st.cov.forEach(function(c){ if (c.s <= s && e <= c.e && c.at > best) best = c.at; });
+  return best;
+}
+function storeAddCov(st, s, e, at){
+  // ช่วงเก่าที่อยู่ข้างในช่วงใหม่และเก่ากว่า ไม่ต้องจำแล้ว
+  st.cov = st.cov.filter(function(c){ return !(s <= c.s && c.e <= e && c.at <= at); });
+  st.cov.push({s:s, e:e, at:at});
+  if (st.cov.length > 40) st.cov.shift();
+}
+/** ผลจากชีตของช่วง s..e ที่ขอไว้ตอนเวลา startedAt: แทนที่ของเดิมในช่วงนั้น ยกเว้นสิ่งที่แอปเพิ่ง เพิ่ม/แก้/ลบ หลังจากเริ่มขอ */
+function storeMerge(st, s, e, items, startedAt){
+  var seen = {};
+  items.forEach(function(x){ seen[x.id] = 1; });
+  Object.keys(st.tx).forEach(function(id){
+    var x = st.tx[id];
+    if (x.date >= s && x.date <= e && !seen[id] && !((st.touched[id] || 0) > startedAt)) delete st.tx[id];
+  });
+  items.forEach(function(x){
+    if ((st.gone[x.id] || 0) > startedAt) return;
+    if ((st.touched[x.id] || 0) > startedAt) return;
+    st.tx[x.id] = x;
+  });
+  storeAddCov(st, s, e, startedAt);
+}
+function storePut(st, x, now){ st.tx[x.id] = x; st.touched[x.id] = now; delete st.gone[x.id]; }
+function storeDel(st, id, now){ delete st.tx[id]; st.gone[id] = now; }
+function idNum(id){ var m = /^T(\d+)$/.exec(id || ''); return m ? Number(m[1]) : 0; }
+/** เรียงแบบเดียวกับชีต: วันใหม่ก่อน วันเดียวกันรายการที่ยังไม่ได้ส่งขึ้นก่อน แล้วรายการที่บันทึกทีหลังขึ้นก่อน */
+function viewSort(list){
+  return list.sort(function(a,b){
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    if (!!a.pending !== !!b.pending) return a.pending ? -1 : 1;
+    if (a.pending) return (b.at - a.at) || (b.idx - a.idx);
+    return idNum(b.id) - idNum(a.id);
+  });
+}
+function storeQuery(st, s, e){
+  var out = [];
+  Object.keys(st.tx).forEach(function(id){ var x = st.tx[id]; if (x.date >= s && x.date <= e) out.push(x); });
+  return out;
+}
+/** รายการที่ยังไม่ได้ส่ง (จากคิวในเครื่อง) ในรูปแบบเดียวกับรายการจริง */
+function outboxItems(box, s, e){
+  var out = [];
+  box.forEach(function(en){
+    en.items.forEach(function(it, i){
+      if (it.date < s || it.date > e) return;
+      out.push({ id:'P-' + en.token + '-' + i, pending:true, token:en.token, idx:i, at:en.at, state:en.state, err:en.err || '',
+        date:it.date, type:it.type, catId:it.catId, amount:it.amount, note:it.note, meals:it.meals || [], source:en.source });
+    });
+  });
+  return out;
+}
+/** ผลบันทึกจากเซิร์ฟเวอร์ -> รายการจริง (เซิร์ฟเวอร์ 2.1 ส่งมาแค่รหัส จึงประกอบจากที่ส่งไป) */
+function savedItems(res, entry){
+  if (res && res.items && res.items.length === entry.items.length) return res.items;
+  return entry.items.map(function(it, i){
+    return { id:res.ids[i], date:it.date, type:it.type, catId:it.catId, amount:it.amount, note:it.note || '', meals:it.meals || [], source:entry.source };
+  });
+}
+/** ส่งไม่สำเร็จเพราะเน็ต (ลองใหม่เองได้) หรือเพราะข้อมูล (ต้องให้เบ๊บแก้) */
+function retryable(err){ return !err || !err.code || err.code === 'BAD_REQUEST'; }
+function nextDelay(prev){ return Math.min(Math.max(2000, (prev || 0) * 2), 60000); }
+function localIso(d){ return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate()); }
 </script>
 
 <script>
 /* ---------- สถานะของแอป ---------- */
-var CLIENT_VERSION = '2.1.0';
+var CLIENT_VERSION = '2.2.0';
 var LOCK_AFTER_MS = 60000;   // ออกจากแอปเกิน 1 นาที กลับมาต้องปลดล็อกใหม่
-var S = { boot:null, cat:{}, tab:'add', listMode:'cycle', anchor:null, custom:null, cache:{}, api:null, key:null, unlocked:false, started:false, hiddenAt:0 };
+var STALE_MS = 180000;       // ข้อมูลที่จำไว้เกิน 3 นาที แสดงทันทีแล้วขอของใหม่เงียบ ๆ ตามหลัง
+var S = { boot:null, cat:{}, tab:'add', listMode:'cycle', anchor:null, custom:null, api:null, key:null, unlocked:false, started:false, hiddenAt:0,
+          store:newStore(), inflight:{}, outbox:[], flushing:false, retryTimer:null, retryDelay:0, perf:[], bootAt:0, bootLive:false, addForm:null };
 
 function $(id){ return document.getElementById(id); }
 
-/* ---------- ที่เก็บในเครื่อง (เก็บแค่ลิงก์ กุญแจ PIN แบบแฮช และรหัสลายนิ้วมือ ไม่มีข้อมูลเงิน) ---------- */
+/* ---------- ที่เก็บในเครื่อง ----------
+   เก็บ: ลิงก์ API กุญแจ PIN แบบแฮช รหัสลายนิ้วมือ รายชื่อหมวด/รอบเงินเดือน (boot) ไม่มีจำนวนเงิน
+   และคิวรายการที่กดบันทึกแล้วแต่ยังส่งไม่สำเร็จ (outbox) ลบทิ้งทันทีที่ส่งสำเร็จ */
 var LS = {
   ok: (function(){ try { localStorage.setItem('mb.t', '1'); localStorage.removeItem('mb.t'); return true; } catch(e){ return false; } })(),
   get: function(k){ try { return localStorage.getItem('mb.' + k); } catch(e){ return null; } },
   set: function(k, v){ try { localStorage.setItem('mb.' + k, String(v)); } catch(e){} },
   del: function(k){ try { localStorage.removeItem('mb.' + k); } catch(e){} }
 };
-function wipeDevice(){ ['api','key','pinSalt','pinHash','cred','bio','fails','failUntil'].forEach(LS.del); }
+function wipeDevice(){ ['api','key','pinSalt','pinHash','cred','bio','fails','failUntil','boot','outbox'].forEach(LS.del); S.outbox = []; }
 
 /** ส่งคำสั่งไป Apps Script: POST แบบ text/plain ไม่แนบคุกกี้ Google */
 function apiPost(url, key, action, args){
   var ctl = typeof AbortController === 'function' ? new AbortController() : null;
   var timer = ctl ? setTimeout(function(){ ctl.abort(); }, 45000) : null;
+  var t0 = performance.now();
+  function perf(ms, ok){
+    S.perf.push({ action:action, rtt:Math.round(performance.now() - t0), ms:typeof ms === 'number' ? ms : null, ok:ok, at:Date.now() });
+    if (S.perf.length > 12) S.perf.shift();
+  }
   return fetch(url, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' },
       body: JSON.stringify({ key:key, action:action, args:args || [] }),
       redirect:'follow', credentials:'omit', cache:'no-store', signal: ctl ? ctl.signal : undefined })
@@ -362,10 +463,12 @@ function apiPost(url, key, action, args){
     .then(function(txt){
       if (timer) clearTimeout(timer);
       var j;
-      try { j = JSON.parse(txt); } catch(e){ throw new Error('เซิร์ฟเวอร์ไม่ได้ตอบเป็นข้อมูล ตรวจลิงก์ API และการตั้ง Deploy'); }
+      try { j = JSON.parse(txt); } catch(e){ perf(null, false); throw new Error('เซิร์ฟเวอร์ไม่ได้ตอบเป็นข้อมูล ตรวจลิงก์ API และการตั้ง Deploy'); }
+      perf(j && j.ms, !!(j && j.ok));
       if (!j || !j.ok){ var er = new Error((j && j.error) || 'เกิดข้อผิดพลาด'); er.code = j && j.code; throw er; }
+      if (action === 'speedTest' && j.result) j.result.__ms = j.ms;
       return j.result;
-    }, function(e){ if (timer) clearTimeout(timer); throw e; });
+    }, function(e){ if (timer) clearTimeout(timer); if (!e.code) perf(null, false); throw e; });
 }
 
 function call(fn){
@@ -396,7 +499,145 @@ function closeSheet(level){ $('ov' + level).hidden = true; $('sh' + level).inner
   $('ov' + l).addEventListener('click', function(e){ if (e.target === this) closeSheet(l); });
 });
 
-function invalidate(){ S.cache = {}; }
+/* ---------- ชั้นข้อมูล: แสดงจากที่จำไว้ทันที ขอจากชีตเฉพาะที่ยังไม่รู้หรือเก่าเกิน ---------- */
+function deviceToday(){ return localIso(new Date()); }
+
+/** ขอรายการช่วง s..e จากชีต (ช่วงเดียวกันที่กำลังขออยู่ ใช้คำขอเดิมร่วมกัน) */
+function fetchRange(s, e){
+  var k = s + '|' + e;
+  if (S.inflight[k]) return S.inflight[k];
+  var startedAt = Date.now();
+  var p = call('listTransactions', s, e).then(function(list){
+    storeMerge(S.store, s, e, list, startedAt);
+    delete S.inflight[k];
+    return list;
+  }, function(err){ delete S.inflight[k]; throw err; });
+  S.inflight[k] = p;
+  return p;
+}
+
+/** รายการที่จะแสดงในช่วง s..e = ที่ยืนยันแล้ว + ที่ยังรอส่ง */
+function localRange(s, e){ return viewSort(storeQuery(S.store, s, e).concat(outboxItems(S.outbox, s, e))); }
+
+/**
+ * แสดงช่วง s..e: draw(list) ถูกเรียกทันทีถ้ามีข้อมูล (และอีกครั้งเมื่อได้ของใหม่)
+ * draw(null) = ยังไม่มีข้อมูล ให้แสดงโครงรอโหลด, fail(err) = โหลดไม่สำเร็จ
+ */
+function viewRange(s, e, draw, fail){
+  var at = storeCovered(S.store, s, e);
+  if (at){
+    draw(localRange(s, e));
+    if (Date.now() - at > STALE_MS) fetchRange(s, e).then(function(){ draw(localRange(s, e)); }, function(){});
+    return;
+  }
+  draw(null);
+  if (S.bootPending && !S.bootLive) return;   // ข้อมูลตั้งต้นกำลังมา (มีรายการของรอบนี้ติดมาด้วย) ไม่ต้องขอซ้ำ
+  fetchRange(s, e).then(function(){ draw(localRange(s, e)); }, function(err){ fail(err); });
+}
+
+/** โหลดล่วงหน้าแบบเงียบ (ไม่แสดงอะไรถ้าไม่สำเร็จ) */
+function prefetch(s, e){
+  if (!s || !e || s > e || storeCovered(S.store, s, e) || !S.boot) return;
+  fetchRange(s, e).catch(function(){});
+}
+
+function skeletonHtml(n){
+  var h = '';
+  for (var i = 0; i < (n || 3); i++) h += '<div class="sk"><i class="c"></i><span class="grow"><i style="width:' + (55 + (i*17)%35) + '%"></i><i style="width:30%;margin-top:6px;height:9px"></i></span><i style="width:56px"></i></div>';
+  return h;
+}
+
+/** วาดหน้าที่เปิดอยู่ใหม่จากข้อมูลในเครื่อง (เร็ว ไม่เรียกเซิร์ฟเวอร์ถ้าข้อมูลยังใหม่) */
+function rerender(){
+  if (!S.boot) return;
+  refreshDay();
+  if (S.tab === 'list') loadList();
+  syncBadge();
+}
+
+/* ---------- คิวรายการที่ยังไม่ได้ส่ง (บันทึกขึ้นก่อน ส่งทีหลัง) ---------- */
+function loadOutbox(){
+  try { S.outbox = JSON.parse(LS.get('outbox') || '[]') || []; } catch(e){ S.outbox = []; }
+  // ถ้าแอปปิดไปตอนกำลังส่ง ให้ส่งใหม่ด้วย token เดิม (เซิร์ฟเวอร์กันบันทึกซ้ำให้)
+  S.outbox.forEach(function(en){ if (en.state === 'sending') en.state = 'wait'; });
+}
+function saveOutbox(){ if (S.outbox.length) LS.set('outbox', JSON.stringify(S.outbox)); else LS.del('outbox'); }
+function findEntry(token){ for (var i = 0; i < S.outbox.length; i++) if (S.outbox[i].token === token) return S.outbox[i]; return null; }
+
+function enqueue(source, items, token){
+  S.outbox.push({ token:token, source:source, items:items, at:Date.now(), state:'wait', err:'' });
+  saveOutbox();
+  items.forEach(function(it){
+    S.boot.lastAmount[it.catId] = it.amount;
+    S.boot.usage[it.catId] = (S.boot.usage[it.catId] || 0) + 1;
+  });
+  rerender();
+  S.retryDelay = 0;
+  flushOutbox();
+}
+
+/** ส่งคิวทีละชุดตามลำดับ ชุดที่ข้อมูลผิด (เช่น หมวดถูกเลิกใช้) ข้ามไปและรอให้แก้ */
+function flushOutbox(){
+  if (S.flushing || !S.api || !S.key) return;
+  var en = null;
+  for (var i = 0; i < S.outbox.length; i++) if (S.outbox[i].state === 'wait'){ en = S.outbox[i]; break; }
+  if (!en){ syncBadge(); return; }
+  clearTimeout(S.retryTimer);
+  S.flushing = true; en.state = 'sending'; saveOutbox(); rerender();
+  call('addTransactions', en.items, en.source, en.token).then(function(res){
+    var now = Date.now();
+    savedItems(res, en).forEach(function(x){ storePut(S.store, x, now); });
+    S.outbox = S.outbox.filter(function(x){ return x !== en; });
+    saveOutbox();
+    S.flushing = false; S.retryDelay = 0;
+    rerender();
+    flushOutbox();
+  }).catch(function(err){
+    S.flushing = false;
+    if (err.code === 'AUTH'){ en.state = 'wait'; saveOutbox(); syncBadge(); return; }
+    if (retryable(err)){
+      en.state = 'wait'; en.err = err.message; saveOutbox(); rerender();
+      S.retryDelay = nextDelay(S.retryDelay);
+      clearTimeout(S.retryTimer);
+      S.retryTimer = setTimeout(flushOutbox, S.retryDelay);
+      return;
+    }
+    en.state = 'failed'; en.err = err.message; saveOutbox(); rerender();
+    toast('ส่งรายการไม่สำเร็จ: ' + err.message, true);
+    flushOutbox();
+  });
+}
+
+function syncBadge(){
+  var b = $('btnSync'); if (!b) return;
+  var wait = 0, bad = 0;
+  S.outbox.forEach(function(en){ if (en.state === 'failed') bad += en.items.length; else wait += en.items.length; });
+  b.hidden = !(wait || bad);
+  b.className = 'syncbtn' + (bad ? ' bad' : '');
+  b.textContent = bad ? '⚠️ ส่งไม่สำเร็จ ' + bad : (S.flushing ? '⏳ กำลังส่ง ' + wait : '⏳ รอส่ง ' + wait);
+}
+
+/** หน้ารายการที่ยังไม่ได้ส่ง: ส่งใหม่ / แก้ / ลบทิ้ง */
+function openOutbox(){
+  if (!S.outbox.length){ closeSheet(1); return; }
+  var items = viewSort(outboxItems(S.outbox, '0000-01-01', '9999-12-31'));
+  var anyErr = S.outbox.filter(function(en){ return en.err; })[0];
+  var sh = openSheet(1, '<h2>รายการที่ยังไม่ได้ส่งเข้าชีต</h2>' +
+    '<p class="muted small">บันทึกไว้ในเครื่องนี้แล้ว แอปส่งให้เองเมื่อเน็ตกลับมา ไม่ต้องกรอกซ้ำ · แตะรายการเพื่อแก้หรือลบ</p>' +
+    (anyErr ? '<div class="err-box">ล่าสุด: ' + escapeHtml(anyErr.err) + '</div>' : '') +
+    '<div class="card" style="padding:4px 10px;margin-top:10px">' + items.map(txRowHtml).join('') + '</div>' +
+    '<button class="primary" id="obSend">ส่งทั้งหมดอีกครั้ง</button><button class="ghost" style="width:100%;margin-top:10px" id="obClose">ปิด</button>');
+  sh.onclick = function(e){
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'obClose') return closeSheet(1);
+    if (b.id === 'obSend'){
+      S.outbox.forEach(function(en){ if (en.state === 'failed') en.state = 'wait'; });
+      saveOutbox(); S.retryDelay = 0; flushOutbox(); closeSheet(1); toast('กำลังส่ง…'); return;
+    }
+    if (b.dataset.tx){ var x = items.filter(function(t){ return t.id === b.dataset.tx; })[0]; if (x) openEdit(x, function(){ if (S.outbox.some(function(en){ return en.state === 'failed'; })) openOutbox(); }); }
+  };
+}
+$('btnSync').onclick = openOutbox;
 
 /* ---------- ตัวเลือกหมวด ---------- */
 function pickCategory(type, onPick){
@@ -525,35 +766,66 @@ function makeForm(box, init, opts){
     if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date)) return fail('ยังไม่ได้เลือกวันที่');
     return { date:f.date, type:f.type, catId:c.id, amount:r.value, note:f.note.trim(), meals:c.main === 'อาหาร' ? f.meals.slice() : [] };
   }
+  /** รายการที่ยังรอส่ง: แก้/ลบในคิวของเครื่องได้เลย (ยกเว้นตอนกำลังส่ง) */
+  function pendingEntry(){
+    var en = init.pending ? findEntry(init.token) : null;
+    if (init.pending && !en){ fail('รายการนี้ส่งเข้าชีตแล้ว ปิดแล้วแตะใหม่จากรายการ'); return null; }
+    if (en && en.state === 'sending'){ fail('กำลังส่งรายการนี้อยู่ รอสักครู่แล้วลองใหม่'); return null; }
+    return en;
+  }
+  var lastSaveAt = 0;
   function save(btn){
     fail('');
-    var item = collect(); if (!item) return;
-    f.busy = true; btn.disabled = true; btn.textContent = 'กำลังบันทึก…';
-    var p = opts.edit ? call('updateTransaction', init.id, item) : call('addTransactions', [item], 'กรอกเอง', f.token);
-    p.then(function(){
-      invalidate();
-      S.boot.lastAmount[item.catId] = item.amount;
-      S.boot.usage[item.catId] = (S.boot.usage[item.catId] || 0) + 1;
-      toast((opts.edit ? 'แก้ไขแล้ว: ' : 'บันทึกแล้ว: ') + catLabel(S.cat[item.catId]) + ' ' + fmtMoney(item.amount));
-      f.busy = false;
-      if (opts.edit){ opts.onDone && opts.onDone(); return; }
-      var wasSalary = S.cat[item.catId].main === 'เงินเดือน';
-      f.amount = ''; f.note = ''; f.meals = []; f.token = newToken();
-      render();
-      opts.onDone && opts.onDone(item);
-      if (wasSalary) askNewCycle(item.date);
-    }).catch(function(err){
-      f.busy = false; btn.disabled = false; btn.textContent = opts.edit ? 'บันทึกการแก้ไข' : 'บันทึก';
-      fail(err.message + '\n(ข้อมูลยังอยู่ในฟอร์ม กดบันทึกอีกครั้งได้ ระบบกันบันทึกซ้ำให้)');
-    });
+    var item = collect();
+    if (!item){ if (Date.now() - lastSaveAt < 1500) fail(''); return; }   // แตะซ้ำหลังบันทึก (ฟอร์มว่างแล้ว) ไม่ต้องขึ้นข้อความเตือน
+    if (init.pending){
+      var en = pendingEntry(); if (!en) return;
+      en.items[init.idx] = item; en.state = 'wait'; en.err = '';
+      saveOutbox(); toast('แก้ไขแล้ว (รอส่ง): ' + catLabel(S.cat[item.catId]) + ' ' + fmtMoney(item.amount));
+      opts.onDone && opts.onDone(); rerender(); S.retryDelay = 0; flushOutbox();
+      return;
+    }
+    if (opts.edit){
+      f.busy = true; btn.disabled = true; btn.textContent = 'กำลังบันทึก…';
+      call('updateTransaction', init.id, item).then(function(x){
+        storePut(S.store, x, Date.now());
+        toast('แก้ไขแล้ว: ' + catLabel(S.cat[item.catId]) + ' ' + fmtMoney(item.amount));
+        f.busy = false;
+        opts.onDone && opts.onDone(); rerender();
+      }).catch(function(err){
+        f.busy = false; btn.disabled = false; btn.textContent = 'บันทึกการแก้ไข';
+        fail(err.message + '\n(ข้อมูลยังอยู่ในฟอร์ม กดบันทึกอีกครั้งได้)');
+      });
+      return;
+    }
+    // เพิ่มใหม่: ขึ้นในรายการทันที ส่งเข้าชีตเบื้องหลัง
+    lastSaveAt = Date.now();
+    var token = f.token, wasSalary = S.cat[item.catId].main === 'เงินเดือน';
+    f.amount = ''; f.note = ''; f.meals = []; f.token = newToken();
+    render();
+    if (opts.onDone) opts.onDone(item);
+    enqueue('กรอกเอง', [item], token);
+    toast('บันทึกแล้ว: ' + catLabel(S.cat[item.catId]) + ' ' + fmtMoney(item.amount));
+    if (wasSalary) askNewCycle(item.date);
   }
   function del(btn){
     if (!btn.dataset.sure){ btn.dataset.sure = '1'; btn.textContent = 'แตะอีกครั้งเพื่อยืนยันการลบ'; return; }
+    if (init.pending){
+      var en = pendingEntry(); if (!en) return;
+      en.items.splice(init.idx, 1);
+      if (!en.items.length) S.outbox = S.outbox.filter(function(x){ return x !== en; });
+      saveOutbox(); toast('ลบรายการที่ยังไม่ได้ส่งแล้ว (ไม่ได้เข้าชีต)');
+      opts.onDone && opts.onDone(); rerender();
+      return;
+    }
     f.busy = true; btn.disabled = true; btn.textContent = 'กำลังลบ…';
     call('deleteTransaction', init.id).then(function(){
-      invalidate(); toast('ลบรายการแล้ว'); f.busy = false; opts.onDone && opts.onDone();
+      storeDel(S.store, init.id, Date.now());
+      toast('ลบรายการแล้ว'); f.busy = false; opts.onDone && opts.onDone(); rerender();
     }).catch(function(err){ f.busy = false; btn.disabled = false; btn.textContent = 'ลบรายการนี้'; delete btn.dataset.sure; fail(err.message); });
   }
+  f.pristine = function(){ return !f.catId && !f.amount && !f.note && !f.busy; };
+  f.redraw = render;
   render();
   return f;
 }
@@ -572,7 +844,7 @@ function askNewCycle(date){
     if (b.dataset.a === 'no') return closeSheet(2);
     b.disabled = true; b.textContent = 'กำลังบันทึก…';
     call('startCycle', date).then(function(cycles){
-      S.boot.cycles = cycles; invalidate(); closeSheet(2); toast('เริ่มรอบใหม่ ' + thaiDate(date) + ' แล้ว');
+      S.boot.cycles = cycles; saveLiteBoot(); closeSheet(2); toast('เริ่มรอบใหม่ ' + thaiDate(date) + ' แล้ว');
       if (S.tab === 'list') loadList();
     }).catch(function(err){ b.disabled = false; b.textContent = 'เริ่มรอบใหม่'; $('cyErr').textContent = err.message; });
   };
@@ -580,6 +852,7 @@ function askNewCycle(date){
 
 /* ---------- ชุดรายการวันเงินเดือน ---------- */
 function openPayday(){
+  if (!S.boot.template){ toast('กำลังโหลดชุดรายการจากชีต รอสักครู่แล้วแตะอีกครั้ง'); return; }
   var rows = S.boot.template.map(function(t){ return {catId:t.catId, type:t.type, amount:String(t.amount), slip:t.slip, on:true, detail:t.detail}; });
   var date = S.boot.today, token = newToken();
   var sh = openSheet(1, '');
@@ -648,15 +921,11 @@ function openPayday(){
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) err = 'ยังไม่ได้เลือกวันที่';
     if (!items.length) err = 'ไม่มีรายการที่เลือก';
     if (err){ $('pdErr').textContent = err; return; }
-    b.disabled = true; b.textContent = 'กำลังบันทึก ' + items.length + ' รายการ…';
-    call('addTransactions', items, 'ชุดเงินเดือน', token).then(function(res){
-      invalidate();
-      items.forEach(function(it){ S.boot.lastAmount[it.catId] = it.amount; });
-      closeSheet(1);
-      toast('บันทึกชุดวันเงินเดือนแล้ว ' + res.ids.length + ' รายการ');
-      refreshDay();
-      if (items.some(function(it){ return S.cat[it.catId].main === 'เงินเดือน'; })) askNewCycle(date);
-    }).catch(function(err2){ b.disabled = false; b.textContent = 'บันทึกทั้งชุด'; $('pdErr').textContent = err2.message + '\n(กดบันทึกอีกครั้งได้ ระบบกันบันทึกซ้ำให้)'; });
+    closeSheet(1);
+    dayDate = date;
+    enqueue('ชุดเงินเดือน', items, token);
+    toast('บันทึกชุดวันเงินเดือนแล้ว ' + items.length + ' รายการ');
+    if (items.some(function(it){ return S.cat[it.catId].main === 'เงินเดือน'; })) askNewCycle(date);
   };
   render();
 }
@@ -666,39 +935,45 @@ function txRowHtml(x){
   var c = S.cat[x.catId];
   var meals = (x.meals || []).map(function(m){ for (var i=0;i<MEAL_LIST.length;i++) if (MEAL_LIST[i][0] === m) return MEAL_LIST[i][1]; return ''; }).join('');
   var sub = [c && c.sub !== c.main ? c.main : '', meals, x.note].filter(Boolean).join(' · ');
-  return '<button class="tx" data-tx="' + x.id + '"><span class="ic">' + escapeHtml(c ? c.icon : '❔') + '</span>' +
+  if (x.pending) sub = (x.state === 'failed' ? 'ส่งไม่สำเร็จ แตะเพื่อแก้' : x.state === 'sending' ? 'กำลังส่ง…' : 'รอส่ง') + (sub ? ' · ' + sub : '');
+  var cls = 'tx' + (x.pending ? ' pending' + (x.state === 'failed' ? ' failed' : '') : '');
+  return '<button class="' + cls + '" data-tx="' + escapeHtml(x.id) + '"><span class="ic">' + escapeHtml(c ? c.icon : '❔') + '</span>' +
     '<span class="grow"><div class="t1">' + escapeHtml(catLabel(c)) + '</div>' + (sub ? '<div class="t2">' + escapeHtml(sub) + '</div>' : '') + '</span>' +
     '<span class="amt ' + (x.type === 'รายได้' ? 'inc' : 'exp') + '">' + (x.type === 'รายได้' ? '+' : '−') + fmtMoney(x.amount) + '</span></button>';
 }
 
-function fetchRange(start, end){
-  var key = start + '|' + end;
-  if (S.cache[key]) return Promise.resolve(S.cache[key]);
-  return call('listTransactions', start, end).then(function(list){ S.cache[key] = list; return list; });
-}
-
 function openEdit(x, after){
-  var sh = openSheet(1, '<h2>แก้ไขรายการ</h2><div class="card" id="editBox"></div>');
-  makeForm($('editBox'), x, {edit:true, prefix:'e_', onDone:function(){ closeSheet(1); after(); }, onClose:function(){ closeSheet(1); }});
+  var head = x.pending
+    ? '<h2>แก้ไขรายการที่ยังไม่ได้ส่ง</h2><p class="muted small">' + (x.state === 'failed'
+        ? '<span class="exp">ส่งไม่สำเร็จ: ' + escapeHtml(x.err) + '</span><br>แก้ให้ถูกแล้วกดบันทึก แอปจะส่งใหม่ให้'
+        : 'รายการนี้อยู่ในเครื่องรอส่งเข้าชีต แก้หรือลบได้ก่อนส่ง') + '</p>'
+    : '<h2>แก้ไขรายการ</h2>';
+  openSheet(1, head + '<div class="card" id="editBox"></div>');
+  makeForm($('editBox'), x, {edit:true, prefix:'e_', onDone:function(){ closeSheet(1); after && after(); }, onClose:function(){ closeSheet(1); }});
 }
 
-var dayDate = null;
+var dayDate = null, dayShown = [];
 function refreshDay(){
+  if (!S.boot) return;
   var d = dayDate || S.boot.today;
   $('dayTitle').textContent = d === S.boot.today ? 'วันนี้ · ' + thaiDate(d) : thaiDate(d, true);
-  $('dayList').innerHTML = '<div class="empty">กำลังโหลด…</div>';
-  fetchRange(d, d).then(function(list){
+  viewRange(d, d, function(list){
     if ((dayDate || S.boot.today) !== d) return;
+    if (!list){ $('daySum').textContent = ''; $('dayList').innerHTML = skeletonHtml(2); return; }
+    dayShown = list;
     var t = totals(list, S.cat);
     $('daySum').innerHTML = (t.inc ? '<span class="inc">+' + fmtMoney(t.inc) + '</span> ' : '') + '<span class="exp">−' + fmtMoney(t.exp) + '</span>';
     $('dayList').innerHTML = list.length ? list.map(txRowHtml).join('') : '<div class="empty">ยังไม่มีรายการ</div>';
-  }).catch(function(err){ $('dayList').innerHTML = '<div class="err-box">' + escapeHtml(err.message) + '</div>'; });
+  }, function(err){
+    if ((dayDate || S.boot.today) !== d) return;
+    $('dayList').innerHTML = '<div class="err-box">' + escapeHtml(err.message) + '</div><button class="ghost" style="margin-top:8px" data-retry="day">ลองใหม่</button>';
+  });
 }
 $('dayList').addEventListener('click', function(e){
+  if (e.target.closest('[data-retry]')) return refreshDay();
   var b = e.target.closest('[data-tx]'); if (!b) return;
-  var d = dayDate || S.boot.today, list = S.cache[d + '|' + d] || [];
-  var x = list.filter(function(t){ return t.id === b.dataset.tx; })[0];
-  if (x) openEdit(x, refreshDay);
+  var x = dayShown.filter(function(t){ return t.id === b.dataset.tx; })[0];
+  if (x) openEdit(x);
 });
 
 /* ---------- หน้ารายการ ---------- */
@@ -727,10 +1002,15 @@ function loadList(){
   $('customBox').hidden = !custom; $('prev').disabled = custom;
   $('next').disabled = custom || (S.listMode === 'cycle' && r.open) || r.end >= S.boot.today && S.listMode !== 'year' && S.listMode !== 'month' && S.listMode !== 'cycle';
   if (custom){ $('cStart').value = r.start; $('cEnd').value = r.end; }
-  $('txList').innerHTML = '<div class="empty">กำลังโหลด…</div>';
   var seq = ++listSeq;
-  fetchRange(r.start, r.end).then(function(list){
+  viewRange(r.start, r.end, function(list){
     if (seq !== listSeq) return;
+    if (!list){
+      $('sumBox').innerHTML = '<div><small>รายได้</small><b>…</b></div><div><small>รายจ่าย</small><b>…</b></div><div><small>คงเหลือ</small><b>…</b></div>';
+      $('splitBox').textContent = '';
+      $('txList').innerHTML = '<div class="card" style="padding:4px 10px">' + skeletonHtml(5) + '</div>';
+      return;
+    }
     var t = totals(list, S.cat);
     $('sumBox').innerHTML = '<div><small>รายได้</small><b class="inc">' + fmtMoney(t.inc) + '</b></div>' +
       '<div><small>รายจ่าย</small><b class="exp">' + fmtMoney(t.exp) + '</b></div>' +
@@ -744,12 +1024,20 @@ function loadList(){
         '<div class="card" style="padding:4px 10px">' + d.items.map(txRowHtml).join('') + '</div>';
     }).join('') : '<div class="empty">ไม่มีรายการในช่วงนี้</div>';
     S.lastList = list;
-  }).catch(function(err){ if (seq === listSeq) $('txList').innerHTML = '<div class="err-box">' + escapeHtml(err.message) + '</div>'; });
+    // เดาว่าจะกดดูช่วงก่อนหน้าต่อ โหลดรอไว้เงียบ ๆ
+    if (S.listMode !== 'custom' && S.listMode !== 'year'){
+      var pr = periodRange(S.listMode, shiftAnchor(S.listMode, S.anchor, -1, S.boot.cycles, S.boot.today), S.boot.cycles, S.boot.today, null);
+      setTimeout(function(){ prefetch(pr.start, pr.end); }, 300);
+    }
+  }, function(err){
+    if (seq === listSeq) $('txList').innerHTML = '<div class="err-box">' + escapeHtml(err.message) + '</div><button class="ghost" style="margin-top:8px" data-retry="list">ลองใหม่</button>';
+  });
 }
 $('txList').addEventListener('click', function(e){
+  if (e.target.closest('[data-retry]')) return loadList();
   var b = e.target.closest('[data-tx]'); if (!b) return;
   var x = (S.lastList || []).filter(function(t){ return t.id === b.dataset.tx; })[0];
-  if (x) openEdit(x, loadList);
+  if (x) openEdit(x);
 });
 
 /* ---------- แท็บ ---------- */
@@ -767,24 +1055,96 @@ document.querySelector('.tabbar').addEventListener('click', function(e){
 $('btnPayday').onclick = openPayday;
 
 /* ---------- เริ่มต้นแอป (หลังตั้งค่าเครื่องแล้ว) ---------- */
-function startApp(){
-  if (S.started) return;
-  S.started = true;
-  call('getBootstrap').then(function(boot){
-    S.boot = boot; S.cat = {};
-    boot.cats.forEach(function(c){ S.cat[c.id] = c; });
+/* หมวดและรอบเงินเดือนจำไว้ในเครื่อง (ไม่มีจำนวนเงิน) เพื่อให้เปิดแอปแล้วกรอกได้ทันทีไม่ต้องรอชีต */
+function saveLiteBoot(){
+  if (!S.boot || !S.bootLive) return;
+  LS.set('boot', JSON.stringify({ v:1, version:S.boot.version, cats:S.boot.cats, cycles:S.boot.cycles, defaultMode:S.boot.defaultMode }));
+}
+function readLiteBoot(){
+  try {
+    var b = JSON.parse(LS.get('boot') || 'null');
+    if (!b || b.v !== 1 || !Array.isArray(b.cats) || !b.cats.length) return null;
+    return { version:b.version, cats:b.cats, cycles:b.cycles || [], defaultMode:b.defaultMode, today:deviceToday(),
+             template:null, lastAmount:{}, usage:{}, coopPrincipal:0, lite:true };
+  } catch(e){ return null; }
+}
+
+function useBoot(boot){
+  var first = !S.boot;
+  S.boot = boot; S.cat = {};
+  boot.cats.forEach(function(c){ S.cat[c.id] = c; });
+  if (first){
     S.anchor = boot.today;
     S.listMode = boot.defaultMode === 'เดือนปฏิทิน' ? 'month' : 'cycle';
     $('loading').hidden = true; $('v-add').hidden = false;
-    makeForm($('addForm'), {}, {prefix:'a_', onDone:function(item){ dayDate = item.date; refreshDay(); }, onDate:function(d){ dayDate = d; refreshDay(); }});
-    refreshDay();
+    S.addForm = makeForm($('addForm'), {}, {prefix:'a_', onDone:function(item){ dayDate = item.date; refreshDay(); }, onDate:function(d){ dayDate = d; refreshDay(); }});
+  } else if (S.addForm && S.addForm.pristine() && !$('addForm').contains(document.activeElement)){
+    S.addForm.redraw();   // อัปเดตลำดับปุ่มใช้ประจำ ถ้ายังไม่ได้เริ่มกรอก
+  }
+}
+
+function bootBar(msg, retry){
+  var b = $('bootBar');
+  if (!msg){ b.hidden = true; b.innerHTML = ''; return; }
+  b.hidden = false; b.className = 'note-bar' + (retry ? ' bad' : '');
+  b.innerHTML = '<span>' + escapeHtml(msg) + '</span>' + (retry ? '<button id="bootRetry">ลองใหม่</button>' : '');
+  if (retry) $('bootRetry').onclick = function(){ bootBar('กำลังโหลดข้อมูลล่าสุด…'); loadBoot(); };
+}
+
+/** ขอข้อมูลตั้งต้นจากชีต (รอบเดียวได้ทั้งหมวด ชุดเงินเดือน และรายการของรอบ/เดือนปัจจุบัน) */
+var bootSeq = 0;
+function loadBoot(){
+  var seq = ++bootSeq, startedAt = Date.now();
+  S.bootPending = true;
+  return call('getBootstrap').then(function(boot){
+    if (seq !== bootSeq) return;
+    S.bootPending = false;
+    S.bootLive = true; S.bootAt = Date.now();
+    if (dayDate && S.boot && dayDate === S.boot.today && boot.today !== S.boot.today) dayDate = null;
+    useBoot(boot);
+    if (boot.recent) storeMerge(S.store, boot.recent.start, boot.recent.end, boot.recent.items, startedAt);
+    saveLiteBoot();
+    bootBar('');
+    rerender();
+    flushOutbox();
+    // โหลดรอบ/เดือนก่อนหน้าไว้ล่วงหน้า (กดย้อนดูแล้วขึ้นทันที)
+    if (boot.recent) setTimeout(function(){
+      var pc = periodRange('cycle', shiftAnchor('cycle', boot.today, -1, boot.cycles, boot.today), boot.cycles, boot.today, null);
+      var pm = periodRange('month', addMonths(boot.today, -1), boot.cycles, boot.today, null);
+      prefetch(pc.start < pm.start ? pc.start : pm.start, addDays(boot.recent.start, -1));
+    }, 1200);
   }).catch(function(err){
+    if (seq !== bootSeq) return;
+    S.bootPending = false;
+    if (err.code === 'AUTH') return;
+    if (S.boot){ rerender(); bootBar('โหลดข้อมูลล่าสุดไม่สำเร็จ (' + err.message + ') กรอกต่อได้ รายการจะรอส่งให้', true); return; }
     S.started = false;
     $('loading').innerHTML = '<div class="err-box">โหลดข้อมูลไม่สำเร็จ: ' + escapeHtml(err.message) + '</div>' +
       '<button class="ghost" id="btnRetry" style="margin-top:12px">ลองใหม่</button>';
-    var b = $('btnRetry'); if (b) b.onclick = function(){ $('loading').textContent = 'กำลังโหลดข้อมูลจากชีต…'; startApp(); };
+    var b = $('btnRetry'); if (b) b.onclick = function(){ $('loading').innerHTML = skeletonHtml(3); startApp(); };
   });
 }
+
+function startApp(){
+  if (S.started) return;
+  S.started = true;
+  loadOutbox();
+  if (!S.boot){
+    var lite = readLiteBoot();
+    if (lite){ useBoot(lite); refreshDay(); syncBadge(); }
+  }
+  loadBoot();
+}
+
+/** กลับเข้าแอป (ปลดล็อก/สลับกลับมา): ส่งคิวที่ค้าง และขอของใหม่ถ้าข้อมูลเก่าหรือข้ามวันแล้ว */
+function resumeApp(){
+  if (!S.started || !S.boot) return;
+  S.retryDelay = 0; flushOutbox();
+  if (S.bootPending) return;
+  if (deviceToday() !== S.boot.today || Date.now() - S.bootAt > 30 * 60000) loadBoot();
+  else rerender();
+}
+window.addEventListener('online', function(){ S.retryDelay = 0; flushOutbox(); });
 
 /* ---------- หน้าล็อกและการตั้งค่าเครื่อง ---------- */
 var G = $('gate');
@@ -842,7 +1202,7 @@ function bioErrMsg(e){
 
 function unlocked(){
   gateHide(); S.unlocked = true; LS.del('fails'); LS.del('failUntil');
-  startApp();
+  if (S.started) resumeApp(); else startApp();
 }
 function authFailed(){
   S.unlocked = false; S.started = false; S.key = null; LS.del('key');
@@ -972,7 +1332,49 @@ function gateLock(){
 document.addEventListener('visibilitychange', function(){
   if (document.hidden){ S.hiddenAt = Date.now(); return; }
   if (S.unlocked && S.hiddenAt && Date.now() - S.hiddenAt > LOCK_AFTER_MS) gateLock();
+  else if (S.unlocked) resumeApp();
 });
+
+/* ---------- ทดสอบความเร็ว: แยกเวลาเดินทาง (เน็ต + ระบบ Google) กับเวลาที่สคริปต์ทำงานจริง ---------- */
+function speedTest(){
+  var sh = openSheet(1, '<h2>⚡ ทดสอบความเร็ว</h2><p class="muted small">ใช้เวลาราว 10–20 วินาที ไม่บันทึกหรือแก้ข้อมูลใด ๆ</p>' +
+    '<div class="perf card" id="spOut">' + skeletonHtml(3) + '</div><button class="ghost" style="width:100%" id="spClose">ปิด</button>');
+  sh.onclick = function(e){ if (e.target.id === 'spClose') closeSheet(1); };
+  var rows = [];
+  function sec(ms){ return ms == null ? '–' : (ms / 1000).toFixed(2) + ' วิ'; }
+  function timed(action, args){
+    var t0 = performance.now();
+    return call.apply(null, [action].concat(args || [])).then(function(res){
+      var last = S.perf[S.perf.length - 1] || {};
+      return { rtt:Math.round(performance.now() - t0), ms:last.ms, res:res };
+    });
+  }
+  function avg(a){ return a.length ? Math.round(a.reduce(function(x, y){ return x + y; }, 0) / a.length) : null; }
+  var pings = [], server = null, list = null;
+  var today = S.boot ? S.boot.today : deviceToday();
+  timed('ping').then(function(r){ pings.push(r); return timed('ping'); })
+    .then(function(r){ pings.push(r); return timed('ping'); })
+    .then(function(r){ pings.push(r); return timed('speedTest').catch(function(){ return null; }); })
+    .then(function(r){ server = r; return timed('listTransactions', [today, today]); })
+    .then(function(r){ list = r; })
+    .then(function(){
+      var pr = avg(pings.map(function(p){ return p.rtt; })), pm = avg(pings.filter(function(p){ return p.ms != null; }).map(function(p){ return p.ms; }));
+      rows.push(['เรียกเปล่า ไม่แตะชีต (เฉลี่ย 3 ครั้ง)', sec(pr)]);
+      rows.push(['· ในนั้นสคริปต์ทำงานจริง', sec(pm)]);
+      rows.push(['· ที่เหลือคือเดินทาง (เน็ต + ระบบ Google)', pm == null ? '–' : sec(pr - pm)]);
+      if (server && server.res){
+        rows.push(['อ่านแท็บรายการ ' + server.res.rows.toLocaleString() + ' แถว (ฝั่ง Google)', sec(server.res.readMs)]);
+        rows.push(['เรียกแบบอ่านทั้งแท็บ ไป-กลับ', sec(server.rtt)]);
+      } else rows.push(['ทดสอบฝั่ง Google', 'ต้องอัปเดต Code.gs ก่อน']);
+      rows.push(['ดึงรายการวันนี้ ไป-กลับ', sec(list.rtt)]);
+      var recent = S.perf.filter(function(p){ return ['getBootstrap','addTransactions','listTransactions','updateTransaction','deleteTransaction'].indexOf(p.action) >= 0; }).slice(-6);
+      var NAMES = { getBootstrap:'โหลดตอนเปิดแอป', addTransactions:'ส่งรายการเข้าชีต', listTransactions:'ดึงรายการ', updateTransaction:'แก้รายการ', deleteTransaction:'ลบรายการ' };
+      $('spOut').innerHTML = '<table>' + rows.map(function(r){ return '<tr><td>' + escapeHtml(r[0]) + '</td><td><b>' + escapeHtml(r[1]) + '</b></td></tr>'; }).join('') + '</table>' +
+        (recent.length ? '<div class="grp">ที่แอปเพิ่งเรียกจริง (ไป-กลับ / สคริปต์ทำงาน)</div><table>' + recent.map(function(p){
+          return '<tr><td>' + escapeHtml(NAMES[p.action] || p.action) + (p.ok ? '' : ' (ไม่สำเร็จ)') + '</td><td>' + sec(p.rtt) + ' / ' + sec(p.ms) + '</td></tr>'; }).join('') + '</table>' : '') +
+        '<p class="muted small">แคปหน้าจอนี้ส่งให้ผู้ช่วยได้ ถ้า "เดินทาง" กินเวลาส่วนใหญ่ แปลว่าช้าที่เน็ตหรือระบบของ Google ซึ่งแอปแก้ด้วยการไม่ให้รอ (บันทึกขึ้นก่อน ส่งทีหลัง)</p>';
+    }).catch(function(err){ $('spOut').innerHTML = '<div class="err-box">ทดสอบไม่สำเร็จ: ' + escapeHtml(err.message) + '</div>'; });
+}
 
 /* ---------- หน้าตั้งค่า ---------- */
 $('btnSet').onclick = function(){
@@ -981,9 +1383,11 @@ $('btnSet').onclick = function(){
       '<button data-s="lock">🔒 <span class="grow">ล็อกแอปตอนนี้</span></button>' +
       (av ? '<button data-s="bio">👆 <span class="grow">ลายนิ้วมือ / Face ID</span><b>' + (bioOn() ? 'เปิดอยู่' : 'ปิดอยู่') + '</b></button>' : '') +
       '<button data-s="pin">🔢 <span class="grow">เปลี่ยน PIN</span></button>' +
+      '<button data-s="speed">⚡ <span class="grow">ทดสอบความเร็ว</span></button>' +
       '<button data-s="wipe" class="exp">🧹 <span class="grow">ล้างการตั้งค่าเครื่องนี้</span></button></div>' +
       '<div class="err-box" id="setErr"></div>' +
-      '<p class="muted small">ล็อกอัตโนมัติเมื่อออกจากแอปเกิน 1 นาที · เครื่องนี้เก็บแค่ลิงก์ API กุญแจ และ PIN แบบแฮช ข้อมูลเงินทั้งหมดอยู่ใน Google Sheet</p>' +
+      '<p class="muted small">ล็อกอัตโนมัติเมื่อออกจากแอปเกิน 1 นาที · เครื่องนี้เก็บแค่ลิงก์ API กุญแจ PIN แบบแฮช และรายชื่อหมวด/รอบเงินเดือน (ไม่มีจำนวนเงิน) ' +
+        'ยกเว้นรายการที่กดบันทึกแล้วแต่ยังส่งไม่สำเร็จ ซึ่งพักไว้ในเครื่องจนส่งสำเร็จแล้วลบทิ้ง ข้อมูลเงินทั้งหมดอยู่ใน Google Sheet</p>' +
       '<p class="muted small">หน้าแอป v' + CLIENT_VERSION + ' · เซิร์ฟเวอร์ v' + escapeHtml(S.boot ? S.boot.version : '-') + ' · ' + escapeHtml(shortUrl(S.api)) + '</p>' +
       '<button class="ghost" style="width:100%" data-s="close">ปิด</button>');
     sh.onclick = function(e){
@@ -998,8 +1402,12 @@ $('btnSet').onclick = function(){
         return bioRegister().then(function(){ closeSheet(1); toast('เปิดใช้ลายนิ้วมือแล้ว'); })
           .catch(function(err){ b.disabled = false; $('setErr').textContent = bioErrMsg(err); });
       }
+      if (a === 'speed'){ closeSheet(1); return speedTest(); }
       if (a === 'wipe'){
-        if (!b.dataset.sure){ b.dataset.sure = '1'; b.querySelector('.grow').textContent = 'แตะอีกครั้งเพื่อยืนยัน (ข้อมูลในชีตไม่หาย)'; return; }
+        var waiting = 0; S.outbox.forEach(function(en){ waiting += en.items.length; });
+        if (!b.dataset.sure){ b.dataset.sure = '1'; b.querySelector('.grow').textContent = waiting
+          ? 'มีรายการยังไม่ได้ส่ง ' + waiting + ' รายการ จะหายไปด้วย แตะอีกครั้งถ้าแน่ใจ'
+          : 'แตะอีกครั้งเพื่อยืนยัน (ข้อมูลในชีตไม่หาย)'; return; }
         wipeDevice(); location.reload();
       }
     };
@@ -1008,7 +1416,15 @@ $('btnSet').onclick = function(){
 
 /* ---------- เปิดแอป ---------- */
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')){
+  var hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js').catch(function(){});
+  // มีเวอร์ชันใหม่จาก GitHub: ถ้ายังไม่ได้กรอกอะไรค้างไว้ เปิดใหม่ให้เลย ไม่ต้องปิดเปิดแอปเอง
+  navigator.serviceWorker.addEventListener('controllerchange', function(){
+    if (!hadController) return;
+    var idle = !S.addForm || S.addForm.pristine();
+    if (idle && $('ov1').hidden && $('ov2').hidden) return location.reload();
+    toast('มีแอปเวอร์ชันใหม่ ปิดแล้วเปิดแอปอีกครั้งเพื่อใช้');
+  });
 }
 (function boot(){
   S.api = LS.get('api'); S.key = LS.get('key');
