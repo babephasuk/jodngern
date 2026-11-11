@@ -202,6 +202,41 @@ details.tbl th{color:var(--muted)}
 .lnk{color:var(--brand);text-decoration:underline;font-size:13px}
 .chk{display:flex;gap:10px;align-items:flex-start;margin-top:12px;font-weight:600}
 .chk input{width:20px;height:20px;margin-top:2px;flex:none}
+
+/* ---------- เฟส 4: งบดุล / สุขภาพการเงิน ---------- */
+:root{ --good:#1f8a5b; --mid:#b26a00; --low:#c0392b; }
+@media (prefers-color-scheme: dark){ :root{ --good:#5fd39c; --mid:#f0b35a; --low:#ff8a7a; } }
+.good{color:var(--good)} .mid{color:var(--mid)} .low{color:var(--low)}
+.hcard{display:flex;align-items:center;gap:12px;width:100%;text-align:left}
+.hcard .chev{font-size:22px;color:var(--muted)}
+.hs{flex:none;min-width:64px;text-align:center}
+.hscore{font-size:30px;font-weight:700;line-height:1}
+.hscore.big{font-size:44px}
+.hs small{color:var(--muted);font-size:13px}
+.hlab{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12.5px;font-weight:700;border:1px solid currentColor}
+.hlab.good{color:var(--good)} .hlab.mid{color:var(--mid)} .hlab.low{color:var(--low)}
+.hmini{display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:4px;font-size:12.5px;color:var(--ink2)}
+.meter{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:2px 0 6px}
+.meter i{display:block;height:100%;border-radius:4px;background:var(--muted)}
+.meter i.good{background:var(--good)} .meter i.mid{background:var(--mid)} .meter i.low{background:var(--low)}
+.hm{border-top:1px solid var(--line);padding:9px 0 8px}
+.hm:first-of-type{border-top:0}
+.nw{font-size:30px;font-weight:700;margin:2px 0}
+.bsrow,.bsh{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:10px 2px;border-top:1px solid var(--line)}
+.bsrow .nm{display:block;font-weight:600}
+.bsrow small,.bsh small{display:block;color:var(--muted);font-size:12.5px}
+.bsrow b,.bsh b{white-space:nowrap}
+.bsh.ro{cursor:default}
+.bsin{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:12px;margin:2px -8px}
+.bsin label{flex:1;min-width:0}
+.bsin .nm{display:block;font-weight:600}
+.bsin small{display:block;color:var(--muted);font-size:12px}
+.bsin .field{width:42%;flex:none;text-align:right;font-weight:700;padding:10px}
+.bsin.chg{background:var(--brand-soft)}
+.bsin.bad .field{border-color:var(--exp)}
+.ghost.exp{color:var(--exp)}
+.stickybar{position:sticky;bottom:calc(-18px - env(safe-area-inset-bottom));margin:12px -16px calc(-18px - env(safe-area-inset-bottom));padding:10px 16px calc(14px + env(safe-area-inset-bottom));background:var(--bg);border-top:1px solid var(--line)}
+.stickybar .primary{margin-top:8px}
 </style>
 </head>
 <body>
@@ -249,13 +284,18 @@ details.tbl th{color:var(--muted)}
     </div>
     <div id="ovBody"></div>
   </section>
+
+  <!-- หน้างบดุล (เฟส 4) -->
+  <section id="v-bal" hidden>
+    <div id="balBody"></div>
+  </section>
 </main>
 
 <nav class="tabbar">
   <button data-tab="add" class="on"><b>➕</b>เพิ่ม</button>
   <button data-tab="list"><b>📋</b>รายการ</button>
   <button data-tab="over"><b>📊</b>ภาพรวม</button>
-  <button disabled title="เฟส 4"><b>⚖️</b>งบดุล</button>
+  <button data-tab="bal"><b>⚖️</b>งบดุล</button>
 </nav>
 
 <div class="overlay" id="ov1" hidden><div class="sheet" id="sh1"></div></div>
@@ -632,16 +672,167 @@ function templateLocal(rows, catMap){
     return { catId:r.catId, type:type, amount:r.amount, detail:d, slip:type === 'รายจ่าย' && !!r.slip };
   });
 }
+
+/* ---------- เฟส 4: งบดุลและคะแนนสุขภาพการเงิน (ฟังก์ชันล้วน) ---------- */
+var BS_GROUPS = ['สินทรัพย์สภาพคล่อง', 'สินทรัพย์ลงทุน', 'สินทรัพย์ส่วนตัว', 'หนี้สินระยะสั้น', 'หนี้สินระยะยาว'];
+/** ยอดล่าสุดของแต่ละรายการ ณ วันที่ iso (แถวเรียงตามวันที่แล้ว แถวหลังใหม่กว่า) -> { BS01: แถว } */
+function bsAsOf(bal, iso){
+  var last = {};
+  bal.rows.forEach(function(r){ if (r.date <= iso) last[r.item] = r; });
+  return last;
+}
+/** ยอดรวมงบดุล ณ วันที่ iso (บาท) และวันที่ล่าสุดของข้อมูลที่ใช้ */
+function bsTotals(bal, iso){
+  var last = bsAsOf(bal, iso), c = { asset:0, liab:0, liquid:0, invest:0, personal:0 }, groups = {}, date = '', n = 0;
+  bal.items.forEach(function(it){
+    var r = last[it.id]; if (!r) return;
+    var v = Math.round(r.amount * 100);
+    n++;
+    if (r.date > date) date = r.date;
+    groups[it.group] = (groups[it.group] || 0) + v;
+    if (it.side === 'หนี้สิน') c.liab += v; else c.asset += v;
+    if (it.group === 'สินทรัพย์สภาพคล่อง') c.liquid += v;
+    else if (it.group === 'สินทรัพย์ลงทุน') c.invest += v;
+    else if (it.group === 'สินทรัพย์ส่วนตัว') c.personal += v;
+  });
+  var out = { date:date, n:n, groups:{}, last:last };
+  Object.keys(c).forEach(function(k){ out[k] = c[k] / 100; });
+  Object.keys(groups).forEach(function(k){ out.groups[k] = groups[k] / 100; });
+  out.net = (c.asset - c.liab) / 100;
+  return out;
+}
+/** ความมั่งคั่งสุทธิ ณ สิ้นเดือน ย้อนหลัง n เดือน (เดือนปัจจุบันใช้ยอด ณ วันนี้) ข้ามเดือนที่ยังไม่มีข้อมูล */
+function bsMonthly(bal, today, n){
+  var out = [], m = monthStart(today);
+  for (var i = n - 1; i >= 0; i--){
+    var ms = addMonths(m, -i), me = monthEnd(ms), at = me > today ? today : me, t = bsTotals(bal, at);
+    if (!t.n) continue;
+    var p = isoParts(ms);
+    out.push({ iso:at, label:TH_MONTHS[p[1]-1], full:TH_MONTHS[p[1]-1] + ' ' + (p[0] + 543), net:t.net, asset:t.asset, liab:t.liab, open:me > today });
+  }
+  return out;
+}
+/** รายได้แยกที่มา: งานประจำ / ผลตอบแทนจากสินทรัพย์ (ดอกเบี้ย ปันผล ค่าเช่า ไม่นับขายสินทรัพย์) */
+function flowFigures(agg, catMap){
+  var f = figures(agg, catMap), work = 0, passive = 0;
+  Object.keys(agg || {}).forEach(function(k){
+    if (k.charAt(0) !== '+') return;
+    var c = catMap[k.slice(1)]; if (!c) return;
+    if (c.group === 'รายได้จากการทำงาน') work += agg[k];
+    else if (c.group === 'รายได้จากสินทรัพย์' && c.main !== 'ค่าขายสินทรัพย์') passive += agg[k];
+  });
+  f.work = work / 100; f.passive = passive / 100;
+  return f;
+}
+/** เฉลี่ยยอดของหลายช่วง (ช่วงที่ครบแล้ว) */
+function avgFlows(list){
+  var keys = ['inc','realInc','share','loan','exp','spend','save','debt','spendNet','work','passive'], out = { n:list.length };
+  keys.forEach(function(k){
+    var s = 0; list.forEach(function(f){ s += Math.round((f[k] || 0) * 100); });
+    out[k] = list.length ? Math.round(s / list.length) / 100 : 0;
+  });
+  return out;
+}
+function clamp10(x){ return Math.max(0, Math.min(10, x)); }
+function lin(x, bad, good){ return clamp10((x - bad) / (good - bad) * 10); }
+function pctTxt(x){ return (Math.round(x * 1000) / 10).toFixed(1).replace(/\.0$/, '') + '%'; }
+function xTxt(x){ return (Math.round(x * 100) / 100).toFixed(2) + ' เท่า'; }
+function healthLabel(s){ return s == null ? '' : s >= 7 ? 'ดี' : s >= 4 ? 'พอใช้' : 'ควรปรับ'; }
+/**
+ * คะแนนสุขภาพการเงิน 0–10: 4 กลุ่ม (เงินสำรอง / กระแสเงินสด / หนี้ / การออมและลงทุน) เฉลี่ยเท่ากัน
+ * แต่ละกลุ่ม = เฉลี่ยคะแนนตัวชี้วัดในกลุ่ม ตัวชี้วัดที่คำนวณไม่ได้ (ตัวหารเป็นศูนย์) ไม่นับ และแสดงเหตุผลแทน
+ * bs = bsTotals(...), fl = avgFlows(...) ค่าใช้จ่ายจำเป็น = ใช้จ่ายจริง (หักเงินที่เพื่อนหาร) + ผ่อนหนี้ ไม่นับเงินออม
+ */
+function healthScore(bs, fl, word){
+  word = word || 'รอบ';
+  var need = Math.round((fl.spendNet + fl.debt) * 100) / 100, inc = fl.realInc, M = {};
+  function m(key, name, o){ o.key = key; o.name = name; M[key] = o; return o; }
+  // 1) เงินสำรอง
+  if (need > 0){
+    var lq = bs.liquid / need;
+    m('liq', 'สภาพคล่อง', { value:xTxt(lq), raw:lq, score:lin(lq, 0, 3), target:'3–6 เท่าของค่าใช้จ่ายจำเป็นต่อ' + word,
+      text:'เงินสด/เงินฝาก ' + fmtMoney(bs.liquid) + ' พอใช้ราว ' + Math.round(lq * 30) + ' วัน' });
+  } else m('liq', 'สภาพคล่อง', { value:'–', score:null, target:'3–6 เท่า', text:'ยังไม่มีค่าใช้จ่ายในช่วงที่ใช้คำนวณ' });
+  // 2) กระแสเงินสด
+  if (inc > 0){
+    var left = Math.round((inc - need - fl.save) * 100) / 100, rate = left / inc;
+    m('cash', 'เงินเหลือหลังใช้จ่าย ผ่อน และออม', { value:fmtMoney(left) + ' (' + pctTxt(rate) + ')', raw:rate, score:clamp10(5 + rate * 50), target:'เป็นบวก ดีที่สุดเหลือ 10% ของรายได้ขึ้นไป',
+      text:(left >= 0 ? 'เหลือเฉลี่ย ' : 'ขาดเฉลี่ย ') + fmtMoney(Math.abs(left)) + ' ต่อ' + word });
+  } else m('cash', 'เงินเหลือหลังใช้จ่าย ผ่อน และออม', { value:'–', score:null, target:'เป็นบวก', text:'ยังไม่มีรายได้ในช่วงที่ใช้คำนวณ' });
+  if (need > 0){
+    var sv = (fl.work + fl.passive) / need;
+    m('surv', 'ความอยู่รอด', { value:xTxt(sv), raw:sv, score:lin(sv, 0.5, 1), target:'1 เท่าขึ้นไป',
+      text:'รายได้ประจำ (งาน + ผลตอบแทนสินทรัพย์) ครอบคลุมค่าใช้จ่ายจำเป็น ' + Math.round(sv * 100) + '%' });
+  } else m('surv', 'ความอยู่รอด', { value:'–', score:null, target:'1 เท่าขึ้นไป', text:'ยังไม่มีค่าใช้จ่ายในช่วงที่ใช้คำนวณ' });
+  // 3) หนี้
+  if (inc > 0){
+    var dsr = fl.debt / inc;
+    m('dsr', 'ผ่อนหนี้ต่อรายได้', { value:pctTxt(dsr), raw:dsr, score:lin(dsr, 0.6, 0.35), target:'ไม่เกิน 35%',
+      text:'รายได้ทุก 100 บาท ไปผ่อนหนี้ ' + Math.round(dsr * 100) + ' บาท' });
+  } else m('dsr', 'ผ่อนหนี้ต่อรายได้', { value:'–', score:null, target:'ไม่เกิน 35%', text:'ยังไม่มีรายได้ในช่วงที่ใช้คำนวณ' });
+  if (bs.n){
+    var dar = bs.asset > 0 ? bs.liab / bs.asset : null;
+    m('dar', 'หนี้สินต่อสินทรัพย์', dar == null ? { value:'–', score:bs.liab > 0 ? 0 : 10, target:'ไม่เกิน 50%', text:'ยังไม่มีสินทรัพย์ในงบดุล' } :
+      { value:pctTxt(dar), raw:dar, score:lin(dar, 2, 0.5), target:'ไม่เกิน 50%',
+        text:'หนี้ ' + fmtMoney(bs.liab) + ' เทียบสินทรัพย์ ' + fmtMoney(bs.asset) + ' · ความมั่งคั่งสุทธิ ' + fmtMoney(bs.net) });
+  } else m('dar', 'หนี้สินต่อสินทรัพย์', { value:'–', score:null, target:'ไม่เกิน 50%', text:'ยังไม่มีข้อมูลงบดุล' });
+  // 4) การออมและลงทุน
+  if (inc > 0){
+    var srate = fl.save / inc;
+    m('save', 'อัตราการออม', { value:pctTxt(srate), raw:srate, score:lin(srate, 0, 0.1), target:'10% ของรายได้ขึ้นไป',
+      text:'ออมและลงทุนเฉลี่ย ' + fmtMoney(fl.save) + ' ต่อ' + word });
+  } else m('save', 'อัตราการออม', { value:'–', score:null, target:'10% ขึ้นไป', text:'ยังไม่มีรายได้ในช่วงที่ใช้คำนวณ' });
+  if (bs.asset > 0){
+    var ir = bs.invest / bs.asset;
+    m('inv', 'สัดส่วนสินทรัพย์ลงทุน', { value:pctTxt(ir), raw:ir, score:lin(ir, 0, 0.5), target:'50% ของสินทรัพย์ขึ้นไป',
+      text:'สินทรัพย์ลงทุน ' + fmtMoney(bs.invest) + ' จากสินทรัพย์ทั้งหมด ' + fmtMoney(bs.asset) });
+  } else m('inv', 'สัดส่วนสินทรัพย์ลงทุน', { value:'–', score:null, target:'50% ขึ้นไป', text:'ยังไม่มีสินทรัพย์ในงบดุล' });
+  var wr = need > 0 ? fl.passive / need : null;
+  m('wealth', 'ความมั่งคั่ง (ผลตอบแทนจากสินทรัพย์)', { value:wr == null ? '–' : xTxt(wr), raw:wr, score:null, info:true, target:'เป้าระยะยาว 1 เท่า · ไม่นับในคะแนน',
+    text:wr == null ? 'ยังไม่มีค่าใช้จ่ายในช่วงที่ใช้คำนวณ' : 'ดอกเบี้ย ปันผล ค่าเช่า เฉลี่ย ' + fmtMoney(fl.passive) + ' ครอบคลุมค่าใช้จ่ายจำเป็น ' + Math.round(wr * 100) + '%' });
+  var groups = [
+    { name:'เงินสำรอง', keys:['liq'] },
+    { name:'กระแสเงินสด', keys:['cash','surv'] },
+    { name:'หนี้', keys:['dsr','dar'] },
+    { name:'การออมและลงทุน', keys:['save','inv','wealth'] }
+  ];
+  var tot = 0, cnt = 0;
+  groups.forEach(function(g){
+    g.metrics = g.keys.map(function(k){ return M[k]; });
+    var s = 0, c = 0;
+    g.metrics.forEach(function(x){ if (x.score != null){ x.score = Math.round(x.score * 10) / 10; s += x.score; c++; } });
+    g.score = c ? Math.round(s / c * 10) / 10 : null;
+    if (g.score != null){ tot += g.score; cnt++; }
+  });
+  return { score:cnt ? Math.round(tot / cnt * 10) / 10 : null, groups:groups, metrics:M, need:need, fl:fl, bs:bs };
+}
+/** ช่วงที่ครบแล้วล่าสุด n ช่วง (ใหม่สุดก่อน) สำหรับเฉลี่ยค่าใช้จ่าย */
+function donePeriods(mode, cycles, today, n){
+  var list = trendPeriods(mode, today, cycles, today, n + 1).filter(function(p){ return p.end < today && !p.open; });
+  return list.slice(-n).reverse();
+}
+/** ตัวเลข → แกนตัวเลขกลม ๆ ที่ครอบทั้งค่าติดลบและบวก */
+function niceRange(min, max, count){
+  if (min > 0) min = 0; if (max < 0) max = 0;
+  if (max === min) max = min + 1;
+  var raw = (max - min) / (count || 4), mag = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10)), r = raw / mag;
+  var step = (r <= 1 ? 1 : r <= 2 ? 2 : r <= 2.5 ? 2.5 : r <= 5 ? 5 : 10) * mag, out = [];
+  for (var v = Math.floor(min / step) * step; v < max + step * 0.999; v += step) out.push(Math.round(v * 100) / 100);
+  return out;
+}
+/** CSV ที่ Excel ภาษาไทยเปิดได้ถูกต้อง (มี BOM) */
+function csvBlobText(csv){ return '﻿' + csv; }
 </script>
 
 <script>
 /* ---------- สถานะของแอป ---------- */
-var CLIENT_VERSION = '3.0.0';
+var CLIENT_VERSION = '4.0.0';
 var LOCK_AFTER_MS = 60000;   // ออกจากแอปเกิน 1 นาที กลับมาต้องปลดล็อกใหม่
 var STALE_MS = 180000;       // ข้อมูลที่จำไว้เกิน 3 นาที แสดงทันทีแล้วขอของใหม่เงียบ ๆ ตามหลัง
 var S = { boot:null, cat:{}, tab:'add', listMode:'cycle', anchor:null, custom:null, api:null, key:null, unlocked:false, started:false, hiddenAt:0,
           store:newStore(), inflight:{}, outbox:[], flushing:false, retryTimer:null, retryDelay:0, perf:[], bootAt:0, bootLive:false, addForm:null,
-          ovMode:null, ovAnchor:null, ovKey:'', ovState:null, ovOpen:{}, ovDetails:{}, sumCache:{}, sumInflight:null, trendErr:null };
+          ovMode:null, ovAnchor:null, ovKey:'', ovState:null, ovOpen:{}, ovDetails:{}, sumCache:{}, sumInflight:null, trendErr:null,
+          bal:null, balAt:0, balErr:null, balInflight:null, hErr:null, hInflight:null };
 
 function $(id){ return document.getElementById(id); }
 
@@ -803,7 +994,7 @@ function enqueueTemplate(rows){
   flushOutbox();
 }
 function entryCount(en){ return en.kind === 'tpl' ? 1 : en.items.length; }
-function friendlyErr(err){ return err.code === 'BAD_ACTION' ? 'เซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า อัปเดต Code.gs เป็น 3.0.0 (Deploy เป็น New version) แล้วกดส่งใหม่' : err.message; }
+function friendlyErr(err){ return err.code === 'BAD_ACTION' ? 'เซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า อัปเดต Code.gs เป็น 4.0.0 (Deploy เป็น New version) แล้วกดส่งใหม่' : err.message; }
 
 /** ส่งคิวทีละชุดตามลำดับ ชุดที่ข้อมูลผิด (เช่น หมวดถูกเลิกใช้) ข้ามไปและรอให้แก้ */
 function flushOutbox(){
@@ -1447,7 +1638,7 @@ function renderOverview(st){
   function d(k){ return st.pr ? (st.prev === undefined ? undefined : pf ? delta(f[k], pf[k]) : null) : null; }
   var cmpNote = st.pr ? (open ? 'เทียบ' + cmpWord + 'ช่วงเดียวกัน (' + days + ' วันแรก ถึง ' + thaiDate(prevUpto || st.pr.end) + ')' : 'เทียบ' + cmpWord + 'ทั้ง' + ovWord() + ' (' + st.pr.label.replace(/^รอบ /, '') + ')') : 'ไม่มี' + cmpWord + 'ให้เทียบ';
 
-  var h = '<div class="kpis">' +
+  var h = '<div class="card" data-health></div><div class="kpis">' +
     kpiHtml('รายได้จริง', f.realInc, d('realInc'), cmpWord, { cls:'inc', extra:(f.share || f.loan) ? 'รับทั้งหมด ' + fmtMoney(f.inc) + ' (รวม' + [f.share ? 'เงินที่เพื่อนหาร ' + fmtMoney(f.share) : '', f.loan ? 'เงินยืม ' + fmtMoney(f.loan) : ''].filter(Boolean).join(', ') + ')' : '' }) +
     kpiHtml('ใช้จ่ายจริง', f.spend, d('spend'), cmpWord, { color:GROUP_COLOR['ใช้จ่ายจริง'], extra:f.share ? 'หักเงินที่เพื่อนหารแล้ว ' + fmtMoney(f.spendNet) : '' }) +
     kpiHtml('ออมและลงทุน', f.save, d('save'), cmpWord, { color:GROUP_COLOR['ออมและลงทุน'] }) +
@@ -1489,6 +1680,7 @@ function renderOverview(st){
   // แนวโน้ม
   h += '<div class="card" id="ovTrend"></div>';
   body.innerHTML = h;
+  drawHealthCards();
   drawDaily(st, upto);
   drawTrend();
 }
@@ -1589,9 +1781,11 @@ function loadTrend(){
     S.trendErr = null;
     res.forEach(function(r){ S.sumCache[r.start + '|' + r.end] = { at:at, cats:r.cats }; });
     if (S.tab === 'over') drawTrend();
+    drawHealthCards();
   }, function(err){
     if (S.sumInflight === k) S.sumInflight = null;
-    S.trendErr = { at:Date.now(), message:err.code === 'BAD_ACTION' ? 'กราฟนี้ต้องใช้ Code.gs เวอร์ชัน 3.0.0 (อัปเดต Apps Script แล้ว Deploy เป็น New version)' : err.message };
+    setTimeout(drawHealthCards, 0);
+    S.trendErr = { at:Date.now(), message:err.code === 'BAD_ACTION' ? 'กราฟนี้ต้องใช้ Code.gs เวอร์ชัน 4.0.0 (อัปเดต Apps Script แล้ว Deploy เป็น New version)' : err.message };
     if (S.tab === 'over') drawTrend();
   });
 }
@@ -1703,15 +1897,16 @@ $('ovBody').addEventListener('toggle', function(e){
 }, true);
 
 /* ---------- แท็บ ---------- */
-var TAB_TITLE = { add:'เพิ่มรายการ', list:'รายการ', over:'ภาพรวม' };
+var TAB_TITLE = { add:'เพิ่มรายการ', list:'รายการ', over:'ภาพรวม', bal:'งบดุล' };
 function showTab(tab){
   var again = S.tab === tab;
   S.tab = tab;
   document.querySelectorAll('.tabbar button[data-tab]').forEach(function(b){ b.classList.toggle('on', b.dataset.tab === tab); });
-  $('v-add').hidden = tab !== 'add'; $('v-list').hidden = tab !== 'list'; $('v-over').hidden = tab !== 'over';
+  $('v-add').hidden = tab !== 'add'; $('v-list').hidden = tab !== 'list'; $('v-over').hidden = tab !== 'over'; $('v-bal').hidden = tab !== 'bal';
   $('title').textContent = TAB_TITLE[tab];
   if (tab === 'list'){ renderModes(); loadList(); }
   else if (tab === 'over'){ if (again || !S.ovAnchor) S.ovAnchor = S.boot.today; loadOverview(); }
+  else if (tab === 'bal'){ if (again) loadBal(true).catch(function(){}); renderBal(); }
   else refreshDay();
   window.scrollTo(0, 0);
 }
@@ -1719,6 +1914,15 @@ document.querySelector('.tabbar').addEventListener('click', function(e){
   var b = e.target.closest('button[data-tab]'); if (b && S.boot) showTab(b.dataset.tab);
 });
 $('btnPayday').onclick = openPayday;
+$('balBody').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.bs === 'update') return openBalUpdate();
+  if (b.dataset.item) return openBalItem(b.dataset.item);
+  if (b.dataset.retry === 'bal'){ S.balErr = null; loadBal(true).catch(function(){}); renderBal(); }
+});
+$('balBody').addEventListener('toggle', function(e){
+  var d = e.target; if (d && d.dataset && d.dataset.det) S.ovDetails[d.dataset.det] = d.open;
+}, true);
 
 /* ---------- เริ่มต้นแอป (หลังตั้งค่าเครื่องแล้ว) ---------- */
 /* หมวดและรอบเงินเดือนจำไว้ในเครื่อง (ไม่มีจำนวนเงิน) เพื่อให้เปิดแอปแล้วกรอกได้ทันทีไม่ต้องรอชีต */
@@ -2048,6 +2252,462 @@ function speedTest(){
     }).catch(function(err){ $('spOut').innerHTML = '<div class="err-box">ทดสอบไม่สำเร็จ: ' + escapeHtml(err.message) + '</div>'; });
 }
 
+
+/* ---------- เฟส 4: งบดุล ---------- */
+var BAL_TTL = 180000;
+function balErrMsg(err){ return err.code === 'BAD_ACTION' ? 'ส่วนนี้ต้องใช้ Code.gs เวอร์ชัน 4.0.0 (อัปเดต Apps Script แล้ว Deploy เป็น New version)' : err.message; }
+/** งบดุลทั้งหมดอยู่ในหน่วยความจำเท่านั้น (ไม่บันทึกลงเครื่อง) ขอใหม่เมื่อเก่าเกิน 3 นาที */
+function loadBal(force){
+  if (S.balInflight) return S.balInflight;
+  if (!force && S.bal && Date.now() - S.balAt < BAL_TTL) return Promise.resolve(S.bal);
+  if (!force && S.balErr && Date.now() - S.balErr.at < 30000) return Promise.reject(S.balErr);
+  S.balInflight = call('getBalance').then(function(b){ S.balInflight = null; useBal(b); return b; }, function(err){
+    S.balInflight = null; S.balErr = { at:Date.now(), message:balErrMsg(err) }; redrawBal(); throw S.balErr;
+  });
+  return S.balInflight;
+}
+function useBal(b){ S.bal = b; S.balAt = Date.now(); S.balErr = null; redrawBal(); }
+function redrawBal(){ if (S.tab === 'bal') renderBal(); drawHealthCards(); }
+function bsItem(id){ var f = null; (S.bal ? S.bal.items : []).forEach(function(it){ if (it.id === id) f = it; }); return f; }
+function sideColor(it){ return it.side === 'หนี้สิน' ? 'exp' : ''; }
+
+function renderBal(){
+  var box = $('balBody');
+  if (!S.bal){
+    if (S.balErr) box.innerHTML = '<div class="card"><div class="err-box">' + escapeHtml(S.balErr.message) + '</div><button class="ghost" style="margin-top:8px" data-retry="bal">ลองใหม่</button></div>';
+    else { box.innerHTML = '<div class="card">' + skeletonHtml(2) + '</div><div class="card">' + skeletonHtml(6) + '</div>'; loadBal().catch(function(){}); }
+    return;
+  }
+  loadBal().catch(function(){});   // เก่าเกิน 3 นาที ขอใหม่เงียบ ๆ
+  var today = S.boot.today, t = bsTotals(S.bal, today);
+  var h = '<div class="card" data-health></div>';
+  if (!t.n){ box.innerHTML = h + '<div class="card"><div class="empty">ยังไม่มียอดงบดุล</div><button class="primary" data-bs="update">อัปเดตยอดประจำเดือน</button></div>'; drawHealthCards(); return; }
+  var cmpIso = monthEnd(addMonths(monthStart(t.date), -1)), pt = bsTotals(S.bal, cmpIso), d = pt.n ? delta(t.net, pt.net) : null;
+  var cp = isoParts(cmpIso), cmpWord = 'สิ้น ' + TH_MONTHS[cp[1]-1] + ' ' + (cp[0] + 543);
+  var age = daysIn(t.date, today) - 1;
+  h += '<div class="card"><div class="ctitle"><b>ความมั่งคั่งสุทธิ</b><span>ยอดล่าสุด ณ ' + escapeHtml(thaiDate(t.date)) + '</span></div>' +
+    '<div class="nw' + (t.net < 0 ? ' exp' : '') + '">' + fmtMoney(t.net) + '</div>' +
+    '<div class="muted small">สินทรัพย์ ' + fmtMoney(t.asset) + ' · หนี้สิน ' + fmtMoney(t.liab) + '</div>' +
+    (d ? '<div class="small" style="margin-top:4px">' + (d.dir === 0 ? 'เท่ากับ' + cmpWord : (d.dir > 0 ? '▲ เพิ่มขึ้น ' : '▼ ลดลง ') + fmtMoney(d.diff) + ' จาก' + cmpWord) + '</div>' : '') +
+    (age > 35 ? '<div class="note-bar" style="margin:10px 0 0">งบดุลอัปเดตล่าสุด ' + age + ' วันก่อน ถึงเวลาอัปเดตประจำเดือนแล้ว</div>' : '') +
+    '<button class="primary" data-bs="update">อัปเดตยอดประจำเดือน</button></div>';
+  // กลุ่มรายการ
+  h += '<div class="card"><div class="ctitle"><b>รายการ</b><span>แตะเพื่อดูประวัติ</span></div>';
+  BS_GROUPS.forEach(function(g){
+    var rows = S.bal.items.filter(function(it){
+      if (it.group !== g) return false;
+      var r = t.last[it.id];
+      return it.status === 'ใช้งาน' || (r && r.amount);
+    });
+    if (!rows.length) return;
+    h += '<div class="cgrp"><span>' + escapeHtml(g) + '</span><span>' + fmtMoney(t.groups[g] || 0) + '</span></div>';
+    rows.forEach(function(it){
+      var r = t.last[it.id];
+      h += '<button class="bsrow" data-item="' + escapeHtml(it.id) + '"><span class="grow"><span class="nm">' + escapeHtml(it.name) + '</span>' +
+        '<small>' + (r ? 'อัปเดต ' + escapeHtml(thaiDate(r.date)) : 'ยังไม่มียอด') + (it.status !== 'ใช้งาน' ? ' · ซ่อนอยู่' : '') + '</small></span>' +
+        '<b class="' + sideColor(it) + '">' + (r ? fmtMoney(r.amount) : '–') + '</b></button>';
+    });
+  });
+  h += '</div>';
+  h += '<div class="card" id="nwCard"><div class="ctitle"><b>ความมั่งคั่งสุทธิย้อนหลัง</b><span>ยอด ณ สิ้นเดือน</span></div><div class="chart"></div><div id="nwTbl"></div></div>';
+  h += '<p class="note" style="margin:0 2px 14px">ยอด ณ วันใด = ยอดล่าสุดของแต่ละรายการถึงวันนั้น · ประวัติที่นำเข้าจาก Happy Money แก้ได้ในชีตเท่านั้น ส่วนที่กรอกในแอปแก้/ลบได้จากหน้าประวัติของรายการ</p>';
+  box.innerHTML = h;
+  drawHealthCards();
+  var pts = bsMonthly(S.bal, today, 12);
+  netChart($('nwCard').querySelector('.chart'), pts);
+  $('nwTbl').innerHTML = '<details class="tbl" data-det="nw"' + (S.ovDetails.nw ? ' open' : '') + '><summary>ดูเป็นตาราง</summary><table><tr><th>เดือน</th><th>สินทรัพย์</th><th>หนี้สิน</th><th>สุทธิ</th></tr>' +
+    pts.slice().reverse().map(function(p){ return '<tr><td>' + escapeHtml(p.full) + (p.open ? ' (ถึงวันนี้)' : '') + '</td><td>' + fmtMoney(p.asset) + '</td><td>' + fmtMoney(p.liab) + '</td><td>' + fmtMoney(p.net) + '</td></tr>'; }).join('') + '</table></details>';
+}
+
+/** กราฟเส้นความมั่งคั่งสุทธิรายเดือน (ค่าติดลบได้ มีเส้นศูนย์) แตะดูค่าแต่ละเดือน */
+function netChart(el, pts){
+  if (!pts.length){ el.innerHTML = '<div class="empty">ยังไม่มีข้อมูล</div>'; return; }
+  var W = 340, H = 180, L = 46, R = 14, T = 14, B = 24, n = pts.length;
+  var lo = Infinity, hi = -Infinity;
+  pts.forEach(function(p){ lo = Math.min(lo, p.net); hi = Math.max(hi, p.net); });
+  var ticks = niceRange(lo, hi, 4), a = ticks[0], b = ticks[ticks.length - 1];
+  function x(i){ return L + (n > 1 ? i * (W - L - R) / (n - 1) : (W - L - R) / 2); }
+  function y(v){ return T + (H - T - B) * (b - v) / (b - a); }
+  var g = '';
+  ticks.forEach(function(v){ g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '" stroke="' + (v === 0 ? 'var(--muted)' : 'var(--grid)') + '" stroke-width="1"/><text x="' + (L - 6) + '" y="' + (y(v) + 4).toFixed(1) + '" text-anchor="end">' + shortMoney(v) + '</text>'; });
+  pts.forEach(function(p, i){ if (n <= 7 || i % 2 === (n - 1) % 2) g += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle">' + escapeHtml(p.label) + '</text>'; });
+  g += '<polyline points="' + pts.map(function(p, i){ return x(i).toFixed(1) + ',' + y(p.net).toFixed(1); }).join(' ') + '" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+  pts.forEach(function(p, i){ g += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(p.net).toFixed(1) + '" r="' + (i === n - 1 ? 4.5 : 3) + '" fill="var(--s1)" stroke="var(--card)" stroke-width="2"/>'; });
+  var lx = x(n - 1), ly = y(pts[n - 1].net);
+  g += '<text x="' + lx.toFixed(1) + '" y="' + (ly > T + 16 ? ly - 9 : ly + 18).toFixed(1) + '" text-anchor="end" style="fill:var(--ink);font-weight:700">' + shortMoney(pts[n - 1].net) + '</text>';
+  g += '<line class="xh" x1="0" x2="0" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>';
+  g += '<rect x="' + (L - 8) + '" y="0" width="' + (W - L - R + 16) + '" height="' + (H - B) + '" fill="transparent"/>';
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="กราฟความมั่งคั่งสุทธิรายเดือน">' + g + '</svg><div class="tip" hidden></div>';
+  var svg = el.querySelector('svg'), tip = el.querySelector('.tip'), xh = el.querySelector('.xh');
+  function at(ev){
+    var r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) / r.width * W;
+    var i = Math.max(0, Math.min(n - 1, Math.round((sx - L) / ((W - L - R) / Math.max(1, n - 1))))), p = pts[i];
+    xh.setAttribute('x1', x(i)); xh.setAttribute('x2', x(i)); xh.setAttribute('visibility', 'visible');
+    tip.innerHTML = '<div class="h">' + escapeHtml(p.full) + (p.open ? ' (ถึงวันนี้)' : '') + '</div><div class="r">สุทธิ<b>' + fmtMoney(p.net) + '</b></div>' +
+      '<div class="r">สินทรัพย์<b>' + fmtMoney(p.asset) + '</b></div><div class="r">หนี้สิน<b>' + fmtMoney(p.liab) + '</b></div>';
+    tip.hidden = false; tip.style.top = '0px';
+    var px = x(i) / W * r.width;
+    tip.style.left = Math.max(0, Math.min(r.width - tip.offsetWidth, px - tip.offsetWidth / 2)) + 'px';
+  }
+  svg.addEventListener('pointerdown', at);
+  svg.addEventListener('pointermove', function(ev){ if (ev.pointerType === 'mouse' || ev.buttons) at(ev); });
+  svg.addEventListener('pointerleave', function(ev){ if (ev.pointerType === 'mouse'){ tip.hidden = true; xh.setAttribute('visibility', 'hidden'); } });
+}
+
+/** ยอดงบดุล: 0 ได้ (ปิดหนี้แล้ว) */
+function parseBal(raw){
+  var s = String(raw == null ? '' : raw).trim();
+  if (/^[0.,\s]+$/.test(s) && /0/.test(s)) return { ok:true, value:0, cents:0 };
+  return parseAmount(s);
+}
+
+/** หน้าอัปเดตยอดงบดุล: ใส่ยอดล่าสุดไว้ให้ แก้เฉพาะที่เปลี่ยน บันทึกเฉพาะรายการที่ยอดต่างจากเดิม */
+function openBalUpdate(opt){
+  opt = opt || {};
+  if (!S.bal) return;
+  var today = S.boot.today, cur = bsTotals(S.bal, today), vals = {}, notes = {}, showHidden = false, token = newToken(), busy = false;
+  var dateVal = today;
+  function items(){
+    return S.bal.items.filter(function(it){
+      if (opt.only) return it.id === opt.only;
+      return it.status === 'ใช้งาน' || showHidden || (cur.last[it.id] && cur.last[it.id].amount);
+    });
+  }
+  function curC(id){ var r = cur.last[id]; return r ? Math.round(r.amount * 100) : null; }
+  function state(){
+    var changed = [], bad = null, net = Math.round(cur.net * 100);
+    Object.keys(vals).forEach(function(id){
+      var raw = vals[id]; if (raw === undefined) return;
+      var it = bsItem(id); if (!it) return;
+      if (!String(raw).trim()) return;
+      var p = parseBal(raw);
+      if (!p.ok){ bad = bad || it.name + ': ' + (p.error || 'ยอดไม่ถูกต้อง'); return; }
+      var c0 = curC(id);
+      if (c0 === p.cents) return;
+      changed.push({ item:id, amount:p.value, note:notes[id] || '' });
+      var diff = p.cents - (c0 || 0);
+      net += it.side === 'หนี้สิน' ? -diff : diff;
+    });
+    return { changed:changed, bad:bad, net:net / 100 };
+  }
+  function rowHtml(it){
+    var r = cur.last[it.id], v = vals[it.id] !== undefined ? vals[it.id] : (r ? String(r.amount) : '');
+    return '<div class="bsin" data-row="' + escapeHtml(it.id) + '"><label for="bu_' + escapeHtml(it.id) + '"><span class="nm">' + escapeHtml(it.name) + '</span>' +
+      '<small>' + (r ? 'ล่าสุด ' + fmtMoney(r.amount) + ' · ' + escapeHtml(thaiDate(r.date)) : 'ยังไม่มียอด') + (it.side === 'หนี้สิน' ? ' · ยอดหนี้คงค้าง' : '') + '</small></label>' +
+      '<input class="field" id="bu_' + escapeHtml(it.id) + '" inputmode="decimal" autocomplete="off" data-id="' + escapeHtml(it.id) + '" value="' + escapeHtml(v) + '" placeholder="0"></div>';
+  }
+  function render(){
+    var list = items(), h = '<h2>' + (opt.only ? 'อัปเดตยอด ' + escapeHtml(list[0] ? list[0].name : '') : 'อัปเดตยอดงบดุล') + '</h2>' +
+      '<div class="label">วันที่ของยอด</div><input type="date" class="field" id="buDate" max="' + today + '" value="' + dateVal + '">' +
+      (opt.only ? '' : '<p class="note">ใส่ยอดล่าสุดไว้ให้แล้ว แก้เฉพาะรายการที่ยอดเปลี่ยน รายการที่ไม่แก้จะไม่ถูกบันทึกซ้ำ · ใส่ 0 ได้เมื่อปิดหนี้หรือเงินหมด</p>');
+    BS_GROUPS.forEach(function(g){
+      var rows = list.filter(function(it){ return it.group === g; });
+      if (!rows.length) return;
+      h += '<div class="grp">' + escapeHtml(g) + '</div>' + rows.map(rowHtml).join('');
+    });
+    if (!opt.only) h += '<label class="chk"><input type="checkbox" id="buHidden"' + (showHidden ? ' checked' : '') + '><span>แสดงรายการที่ซ่อนอยู่</span></label>';
+    h += '<div class="stickybar"><div id="buSum" class="small"></div><div class="err-box" id="buErr"></div>' +
+      '<div class="row" style="gap:8px"><button class="ghost" id="buClose" style="margin-top:8px;padding:14px 16px">ยกเลิก</button><button class="primary grow" id="buSave">บันทึก</button></div></div>';
+    var sh = openSheet(opt.only ? 2 : 1, h);
+    sh.oninput = function(e){
+      var id = e.target.dataset && e.target.dataset.id;
+      if (id){ vals[id] = e.target.value; update(); }
+      if (e.target.id === 'buDate') dateVal = e.target.value;
+    };
+    sh.onchange = function(e){ if (e.target.id === 'buHidden'){ showHidden = e.target.checked; render(); } };
+    sh.onclick = function(e){
+      if (e.target.id === 'buClose') return closeSheet(opt.only ? 2 : 1);
+      if (e.target.id === 'buSave') return save(e.target);
+    };
+    update();
+  }
+  function update(){
+    var st = state(), box = document.getElementById('buSum'); if (!box) return;
+    document.querySelectorAll('.bsin').forEach(function(row){
+      var id = row.dataset.row, raw = vals[id];
+      var p = raw !== undefined && String(raw).trim() ? parseBal(raw) : null;
+      row.classList.toggle('chg', !!(p && p.ok && p.cents !== curC(id)));
+      row.classList.toggle('bad', !!(p && !p.ok));
+    });
+    var d = delta(st.net, cur.net);
+    box.innerHTML = st.changed.length
+      ? '<b>เปลี่ยน ' + st.changed.length + ' รายการ</b> · ความมั่งคั่งสุทธิหลังบันทึก <b class="' + (st.net < 0 ? 'exp' : 'inc') + '">' + fmtMoney(st.net) + '</b>' +
+        '<div class="muted">เดิม ' + fmtMoney(cur.net) + (d && d.dir ? (d.dir > 0 ? ' · ▲ เพิ่มขึ้น ' : ' · ▼ ลดลง ') + fmtMoney(d.diff) : '') + '</div>'
+      : '<span class="muted">ยังไม่มีรายการที่ยอดเปลี่ยน</span>';
+    $('buErr').textContent = st.bad || '';
+    $('buSave').disabled = busy || !st.changed.length || !!st.bad;
+  }
+  function save(btn){
+    var st = state();
+    if (!st.changed.length || st.bad) return;
+    var d = $('buDate').value;
+    if (!d || d > today){ $('buErr').textContent = 'วันที่ต้องไม่เกินวันนี้'; return; }
+    busy = true; btn.disabled = true; btn.textContent = 'กำลังบันทึก…';
+    call('saveBalance', d, st.changed, token).then(function(b){
+      useBal(b); closeSheet(opt.only ? 2 : 1);
+      if (opt.only) openBalItem(opt.only);
+      toast('บันทึกงบดุลแล้ว ' + st.changed.length + ' รายการ');
+    }, function(err){
+      busy = false; btn.textContent = 'บันทึก'; update();
+      $('buErr').textContent = 'บันทึกไม่สำเร็จ: ' + balErrMsg(err) + ' (ข้อมูลที่กรอกยังอยู่ กดบันทึกใหม่ได้)';
+    });
+  }
+  render();
+}
+
+/** ประวัติของรายการงบดุล 1 รายการ */
+function openBalItem(id){
+  var it = bsItem(id); if (!it) return;
+  var rows = S.bal.rows.filter(function(r){ return r.item === id; });
+  var h = '<h2>' + escapeHtml(it.name) + '</h2><div class="muted small">' + escapeHtml([it.group, it.kind, it.status !== 'ใช้งาน' ? it.status : ''].filter(Boolean).join(' · ')) + '</div>' +
+    (it.note ? '<p class="note">' + escapeHtml(it.note) + '</p>' : '') +
+    '<button class="primary" data-a="upd">อัปเดตยอดรายการนี้</button><div class="grp">ประวัติ (' + rows.length + ' ครั้ง)</div><div class="list">';
+  rows.slice().reverse().forEach(function(r, i, arr){
+    var prev = arr[i + 1], d = prev ? delta(r.amount, prev.amount) : null, app = r.source === 'กรอกในแอป';
+    h += '<button class="bsh' + (app ? '' : ' ro') + '"' + (app ? ' data-row="' + escapeHtml(r.id) + '"' : '') + '><span class="grow"><span>' + escapeHtml(thaiDate(r.date)) + '</span>' +
+      '<small>' + (d && d.dir ? (d.dir > 0 ? '▲ ' : '▼ ') + fmtMoney(d.diff) : prev ? 'เท่าเดิม' : 'ยอดแรก') + (r.note ? ' · ' + escapeHtml(r.note) : '') + ' · ' + (app ? 'กรอกในแอป (แตะเพื่อแก้)' : 'นำเข้า') + '</small></span>' +
+      '<b class="' + sideColor(it) + '">' + fmtMoney(r.amount) + '</b></button>';
+  });
+  h += '</div><button class="ghost" style="width:100%;margin-top:12px" data-a="close">ปิด</button>';
+  var sh = openSheet(1, h);
+  sh.onclick = function(e){
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.a === 'close') return closeSheet(1);
+    if (b.dataset.a === 'upd') return openBalUpdate({ only:id });
+    if (b.dataset.row) return openBalRow(b.dataset.row);
+  };
+}
+
+/** แก้/ลบยอดที่กรอกในแอป */
+function openBalRow(rowId){
+  var r = null; S.bal.rows.forEach(function(x){ if (x.id === rowId) r = x; });
+  if (!r) return;
+  var it = bsItem(r.item);
+  var sh = openSheet(2, '<h2>แก้ยอด ' + escapeHtml(it ? it.name : r.item) + '</h2>' +
+    '<div class="label">วันที่</div><input type="date" class="field" id="brDate" max="' + S.boot.today + '" value="' + r.date + '">' +
+    '<div class="label">ยอด</div><input class="field" id="brAmt" inputmode="decimal" value="' + r.amount + '">' +
+    '<div class="label">หมายเหตุ</div><input class="field" id="brNote" maxlength="300" value="' + escapeHtml(r.note) + '">' +
+    '<div class="err-box" id="brErr"></div><button class="primary" id="brSave">บันทึกการแก้ไข</button>' +
+    '<button class="ghost exp" style="width:100%;margin-top:8px" id="brDel">ลบยอดนี้</button><button class="ghost" style="width:100%;margin-top:8px" id="brClose">ยกเลิก</button>');
+  function back(b){ useBal(b); closeSheet(2); openBalItem(r.item); }
+  function fail(btn, label, err){ btn.disabled = false; btn.textContent = label; $('brErr').textContent = balErrMsg(err); }
+  sh.onclick = function(e){
+    var t = e.target;
+    if (t.id === 'brClose') return closeSheet(2);
+    if (t.id === 'brSave'){
+      var p = parseBal($('brAmt').value), d = $('brDate').value;
+      if (!p.ok) return ($('brErr').textContent = p.error || 'ยอดไม่ถูกต้อง');
+      if (!d || d > S.boot.today) return ($('brErr').textContent = 'วันที่ต้องไม่เกินวันนี้');
+      t.disabled = true; t.textContent = 'กำลังบันทึก…';
+      return call('updateBalanceRow', rowId, { amount:p.value, date:d, note:$('brNote').value }).then(function(b){ back(b); toast('แก้ยอดแล้ว'); }, function(err){ fail(t, 'บันทึกการแก้ไข', err); });
+    }
+    if (t.id === 'brDel'){
+      if (!t.dataset.sure){ t.dataset.sure = '1'; t.textContent = 'แตะอีกครั้งเพื่อยืนยันการลบ'; return; }
+      t.disabled = true; t.textContent = 'กำลังลบ…';
+      return call('deleteBalanceRow', rowId).then(function(b){ back(b); toast('ลบยอดแล้ว'); }, function(err){ fail(t, 'ลบยอดนี้', err); });
+    }
+  };
+}
+
+/* ---------- เฟส 4: คะแนนสุขภาพการเงิน ---------- */
+function healthMode(){ return S.ovMode === 'month' ? 'month' : 'cycle'; }
+function healthWord(){ return healthMode() === 'month' ? 'เดือน' : 'รอบ'; }
+function periodAgg(p){
+  if (storeCovered(S.store, p.start, p.end)) return { agg:aggregate(localRange(p.start, p.end)) };
+  var c = S.sumCache[p.start + '|' + p.end];
+  if (c) return { agg:aggMerge(c.cats, aggregate(outboxItems(S.outbox, p.start, p.end))), stale:Date.now() - c.at > SUM_TTL };
+  return { agg:null };
+}
+function needSums(ps, aggs){
+  var need = []; ps.forEach(function(p, i){ if (!aggs[i].agg || aggs[i].stale) need.push([p.start, p.end]); });
+  if (!need.length) return;
+  if (S.hErr && Date.now() - S.hErr.at < 30000) return;
+  // กราฟแนวโน้มกำลังขอยอดรวมอยู่ (มักครอบช่วงเดียวกัน) รอผลนั้นก่อน แล้วค่อยขอเฉพาะที่ยังขาด
+  if (S.sumInflight){
+    var pend = JSON.parse(S.sumInflight).map(function(r){ return r[0] + '|' + r[1]; });
+    need = need.filter(function(r){ return pend.indexOf(r[0] + '|' + r[1]) < 0; });
+    if (!need.length) return;
+  }
+  var k = JSON.stringify(need);
+  if (S.hInflight === k) return;
+  S.hInflight = k;
+  var at = Date.now();
+  call('summarize', need).then(function(res){
+    if (S.hInflight === k) S.hInflight = null;
+    S.hErr = null;
+    res.forEach(function(r){ S.sumCache[r.start + '|' + r.end] = { at:at, cats:r.cats }; });
+    drawHealthCards();
+  }, function(err){
+    if (S.hInflight === k) S.hInflight = null;
+    S.hErr = { at:Date.now(), message:balErrMsg(err) };
+    drawHealthCards();
+  });
+}
+/** คะแนนตอนนี้ (งบดุลล่าสุด + ค่าเฉลี่ย 3 ช่วงที่ครบแล้ว) และคะแนนช่วงก่อน (งบดุล ณ สิ้นช่วงล่าสุด + 3 ช่วงก่อนหน้านั้น) */
+function computeHealth(){
+  if (!S.boot) return { wait:true };
+  if (!S.bal){
+    if (S.balErr) return { err:S.balErr.message };
+    loadBal().catch(function(){});
+    return { wait:true };
+  }
+  var mode = healthMode(), word = healthWord(), ps = donePeriods(mode, S.boot.cycles, S.boot.today, 4);
+  if (ps.length < 1) return { err:'ยังไม่มี' + word + 'ที่ครบแล้วให้คำนวณ' };
+  var aggs = ps.map(periodAgg);
+  needSums(ps, aggs);
+  if (aggs.some(function(a){ return !a.agg; })) return S.hErr ? { err:S.hErr.message } : { wait:true };
+  var fl = aggs.map(function(a){ return flowFigures(a.agg, S.cat); });
+  var now = healthScore(bsTotals(S.bal, S.boot.today), avgFlows(fl.slice(0, 3)), word);
+  var prev = ps.length >= 2 ? healthScore(bsTotals(S.bal, ps[0].end), avgFlows(fl.slice(1, 4)), word) : null;
+  return { h:now, prev:prev, ps:ps.slice(0, 3), word:word };
+}
+function hClass(s){ return s == null ? '' : s >= 7 ? 'good' : s >= 4 ? 'mid' : 'low'; }
+function scoreTxt(s){ return s == null ? '–' : s.toFixed(1); }
+function drawHealthCards(){
+  var els = document.querySelectorAll('[data-health]'); if (!els.length) return;
+  var st = computeHealth(), html;
+  if (st.wait) html = '<div class="ctitle"><b>สุขภาพการเงิน</b></div>' + skeletonHtml(1);
+  else if (st.err) html = '<div class="ctitle"><b>สุขภาพการเงิน</b></div><div class="err-box">' + escapeHtml(st.err) + '</div><button class="ghost" style="margin-top:8px" data-retry="health">ลองใหม่</button>';
+  else {
+    var h = st.h, d = st.prev && st.prev.score != null && h.score != null ? Math.round((h.score - st.prev.score) * 10) / 10 : null;
+    html = '<button class="hcard" data-open-health><div class="hs"><span class="hscore">' + scoreTxt(h.score) + '</span><small>/10</small></div>' +
+      '<div class="grow"><div class="row" style="gap:6px;flex-wrap:wrap"><b>สุขภาพการเงิน</b>' + (h.score != null ? '<span class="hlab ' + hClass(h.score) + '">' + healthLabel(h.score) + '</span>' : '') + '</div>' +
+      '<div class="small muted">' + (d == null ? '' : d === 0 ? 'เท่ากับ' + st.word + 'ก่อน · ' : (d > 0 ? '▲ ' : '▼ ') + Math.abs(d).toFixed(1) + ' จาก' + st.word + 'ก่อน · ') +
+      'อิงงบดุล ' + escapeHtml(h.bs.date ? thaiDate(h.bs.date) : '-') + '</div>' +
+      '<div class="hmini">' + h.groups.map(function(g){ return '<span>' + escapeHtml(g.name) + ' <b class="' + hClass(g.score) + '">' + scoreTxt(g.score) + '</b></span>'; }).join('') + '</div></div><span class="chev">›</span></button>';
+  }
+  els.forEach(function(el){ el.innerHTML = html; });
+  if ($('hSheet')) openHealth(true);
+}
+document.addEventListener('click', function(e){
+  if (e.target.closest('[data-open-health]')) return openHealth();
+  var rt = e.target.closest('[data-retry="health"]');
+  if (rt){ S.hErr = null; if (S.balErr) S.balErr = null; loadBal(true).catch(function(){}); drawHealthCards(); }
+});
+
+/** refresh = ข้อมูลมาเพิ่มระหว่างเปิดหน้านี้อยู่: วาดใหม่ในที่เดิม ไม่เลื่อนกลับขึ้นบน */
+function openHealth(refresh){
+  var st = computeHealth();
+  var seg = '<div id="hSheet"></div><h2>สุขภาพการเงิน</h2>' +
+    '<div class="seg" id="hMode" style="margin-bottom:10px"><button data-m="cycle"' + (healthMode() === 'cycle' ? ' class="on"' : '') + '>รอบเงินเดือน</button><button data-m="month"' + (healthMode() === 'month' ? ' class="on"' : '') + '>เดือนปฏิทิน</button></div>';
+  var html;
+  if (!st.h){
+    html = seg + (st.err ? '<div class="err-box">' + escapeHtml(st.err) + '</div><button class="ghost" style="margin-top:8px" data-retry="health">ลองใหม่</button>' : '<div class="card">' + skeletonHtml(4) + '</div>') +
+      '<button class="ghost" style="width:100%" data-a="close">ปิด</button>';
+  } else {
+  var h = st.h, ps = st.ps, d = st.prev && st.prev.score != null && h.score != null ? Math.round((h.score - st.prev.score) * 10) / 10 : null;
+  html = seg +
+    '<div class="card" style="text-align:center"><span class="hscore big">' + scoreTxt(h.score) + '</span><small class="muted"> / 10</small>' +
+    (h.score != null ? '<div><span class="hlab ' + hClass(h.score) + '">' + healthLabel(h.score) + '</span></div>' : '') +
+    '<div class="small muted" style="margin-top:6px">' + (d == null ? 'ยังไม่มีคะแนน' + st.word + 'ก่อนให้เทียบ' : d === 0 ? 'เท่ากับ' + st.word + 'ก่อน' : (d > 0 ? '▲ ดีขึ้น ' : '▼ ลดลง ') + Math.abs(d).toFixed(1) + ' จาก' + st.word + 'ก่อน (' + scoreTxt(st.prev.score) + ')') + '</div></div>' +
+    '<p class="note">อิงงบดุล ณ ' + escapeHtml(h.bs.date ? thaiDate(h.bs.date) : '-') + ' · รายรับรายจ่ายเฉลี่ยของ ' + ps.length + ' ' + st.word + 'ที่ครบแล้ว (' +
+      escapeHtml(thaiDate(ps[ps.length - 1].start) + ' – ' + thaiDate(ps[0].end)) + ') · ค่าใช้จ่ายจำเป็นเฉลี่ย ' + fmtMoney(h.need) + ' ต่อ' + st.word + '</p>';
+  h.groups.forEach(function(g){
+    html += '<div class="card"><div class="ctitle"><b>' + escapeHtml(g.name) + '</b><span><b class="' + hClass(g.score) + '">' + scoreTxt(g.score) + '</b> / 10' + (g.score != null ? ' · ' + healthLabel(g.score) : '') + '</span></div>' +
+      '<div class="meter"><i class="' + hClass(g.score) + '" style="width:' + ((g.score || 0) * 10) + '%"></i></div>';
+    g.metrics.forEach(function(m){
+      html += '<div class="hm"><div class="row between"><span>' + escapeHtml(m.name) + '</span><b>' + escapeHtml(m.value) + '</b></div>' +
+        '<div class="small">' + escapeHtml(m.text) + '</div><div class="small muted">เกณฑ์: ' + escapeHtml(m.target) + (m.score != null ? ' · คะแนน ' + m.score.toFixed(1) : m.info ? '' : ' · ไม่นับคะแนน') + '</div></div>';
+    });
+    html += '</div>';
+  });
+  html += '<p class="note">คะแนนรวม = เฉลี่ย 4 กลุ่มเท่ากัน แต่ละกลุ่มเฉลี่ยจากตัวชี้วัดในกลุ่ม · ค่าใช้จ่ายจำเป็น = ใช้จ่ายจริง (หักเงินที่เพื่อนหาร) + ผ่อนหนี้ ไม่นับเงินออม · ' +
+    'ผลตอบแทนจากสินทรัพย์นับดอกเบี้ย ปันผล ค่าเช่า ไม่นับเงินขายสินทรัพย์ · เกณฑ์เป็นเกณฑ์ทั่วไปแบบที่แอปเดิมใช้ ใช้ประกอบการตัดสินใจ ไม่ใช่คำแนะนำทางการเงิน</p>' +
+    '<button class="ghost" style="width:100%" data-a="close">ปิด</button>';
+  }
+  var keep = refresh ? $('sh1').scrollTop : 0;
+  if (refresh && $('sh1').innerHTML === html) return;
+  var sh = openSheet(1, html);
+  sh.scrollTop = keep;
+  sh.onclick = function(e){
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.a === 'close') return closeSheet(1);
+    if (b.dataset.m && b.dataset.m !== healthMode()){
+      S.ovMode = b.dataset.m; LS.set('ovMode', S.ovMode); S.ovAnchor = S.boot.today;
+      if (S.tab === 'over') loadOverview();
+      openHealth();
+      drawHealthCards();
+    }
+  };
+}
+
+/* ---------- เฟส 5: ส่งออกและสำรอง ---------- */
+function saveFile(name, text){
+  var blob = new Blob([csvBlobText(text)], { type:'text/csv;charset=utf-8' });
+  var url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+  return blob;
+}
+function openExport(){
+  var y = isoParts(S.boot.today)[0], last = null;
+  var KINDS = [
+    ['tx', [], 'รายการรายรับรายจ่ายทั้งหมด'],
+    ['tx', [y + '-01-01', S.boot.today], 'รายการปี ' + (y + 543) + ' (ถึงวันนี้)'],
+    ['bs', [], 'งบดุลรายเดือน (ประวัติทั้งหมด)'],
+    ['cat', [], 'หมวดหมู่'],
+    ['bsi', [], 'รายการงบดุล']
+  ];
+  var sh = openSheet(1, '<h2>ส่งออกข้อมูล (CSV)</h2><div class="list">' +
+    KINDS.map(function(k, i){ return '<button data-k="' + i + '">📄 <span class="grow">' + escapeHtml(k[2]) + '</span></button>'; }).join('') + '</div>' +
+    '<div id="exOut" class="small" style="margin-top:10px"></div>' +
+    '<p class="muted small">ไฟล์ CSV เปิดด้วย Excel หรือ Google Sheets ได้ ภาษาไทยไม่เพี้ยน วันที่เป็น ค.ศ. · ไฟล์มีข้อมูลการเงิน เก็บในที่ปลอดภัย · ' +
+    'ข้อมูลตัวจริงอยู่ใน Google Sheet อยู่แล้ว ดาวน์โหลดทั้งไฟล์เป็น Excel ได้จากชีต (ไฟล์ → ดาวน์โหลด)</p>' +
+    '<button class="ghost" style="width:100%" data-a="close">ปิด</button>');
+  sh.onclick = function(e){
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.a === 'close') return closeSheet(1);
+    if (b.dataset.a === 'again' && last) return saveFile(last.name, last.csv);
+    if (b.dataset.a === 'share' && last){
+      var f = new File([csvBlobText(last.csv)], last.name, { type:'text/csv' });
+      return navigator.share({ files:[f], title:last.name }).catch(function(){});
+    }
+    if (b.dataset.k === undefined || b.disabled) return;
+    var k = KINDS[Number(b.dataset.k)];
+    sh.querySelectorAll('[data-k]').forEach(function(x){ x.disabled = true; });
+    $('exOut').innerHTML = '<span class="muted">กำลังเตรียมไฟล์ ' + escapeHtml(k[2]) + '…</span>';
+    call.apply(null, ['exportCsv', k[0]].concat(k[1])).then(function(res){
+      last = res;
+      saveFile(res.name, res.csv);
+      var canShare = false;
+      try { canShare = !!(navigator.canShare && navigator.canShare({ files:[new File(['x'], 'x.csv', { type:'text/csv' })] })); } catch(err){}
+      $('exOut').innerHTML = '✅ <b>' + escapeHtml(res.name) + '</b> · ' + fmtMoney(res.rows) + ' แถว (ดูในโฟลเดอร์ดาวน์โหลด)' +
+        '<div class="row" style="margin-top:8px"><button class="ghost" data-a="again">ดาวน์โหลดอีกครั้ง</button>' + (canShare ? '<button class="ghost" data-a="share">แชร์ / บันทึกไปที่อื่น</button>' : '') + '</div>';
+    }, function(err){
+      $('exOut').innerHTML = '<div class="err-box">ส่งออกไม่สำเร็จ: ' + escapeHtml(balErrMsg(err)) + '</div>';
+    }).then(function(){ sh.querySelectorAll('[data-k]').forEach(function(x){ x.disabled = false; }); });
+  };
+}
+function backupHtml(info){
+  if (!info) return '<span class="muted">กำลังโหลดสถานะ…</span>';
+  var l = info.last;
+  return '<div class="row between"><span>สำรองล่าสุด</span><b>' + (l ? escapeHtml(thaiDate(l.at.slice(0, 10)) + ' ' + l.at.slice(11) + ' น.') : 'ยังไม่เคย') + '</b></div>' +
+    (l ? '<div class="small muted">' + escapeHtml(l.name) + ' · โฟลเดอร์ "' + escapeHtml(l.folder || '') + '"</div>' : '') +
+    '<div class="row between" style="margin-top:8px"><span>สำรองอัตโนมัติวันที่ 1 ทุกเดือน</span><b class="' + (info.auto ? 'inc' : 'exp') + '">' + (info.auto ? 'เปิดอยู่' : 'ยังไม่ได้ตั้ง') + '</b></div>' +
+    (info.auto ? '' : '<div class="small muted">ตั้งได้โดยเปิดหน้า Apps Script เลือกฟังก์ชัน setupBackup แล้วกด Run หนึ่งครั้ง</div>');
+}
+function openBackup(){
+  var sh = openSheet(1, '<h2>สำรองข้อมูล</h2><div class="card" id="bkInfo">' + backupHtml(S.bal && S.bal.backup) + '</div>' +
+    '<div class="err-box" id="bkErr"></div><button class="primary" id="bkNow">สำรองตอนนี้</button>' +
+    '<p class="muted small">ทำสำเนาทั้งไฟล์ชีตไว้ในโฟลเดอร์ "สำรอง แอปการเงินของเบ๊บ" ข้างไฟล์ชีตใน Google Drive ของเบ๊บ แอปไม่ลบสำเนาเก่าเอง · ' +
+    'Google Sheets มีประวัติการแก้ไขอีกชั้น (ไฟล์ → ประวัติเวอร์ชัน)</p><button class="ghost" style="width:100%" id="bkClose">ปิด</button>');
+  loadBal(true).then(function(b){ var el = $('bkInfo'); if (el) el.innerHTML = backupHtml(b.backup); }, function(err){ var el = $('bkErr'); if (el) el.textContent = err.message; });
+  sh.onclick = function(e){
+    var t = e.target;
+    if (t.id === 'bkClose') return closeSheet(1);
+    if (t.id !== 'bkNow') return;
+    t.disabled = true; t.textContent = 'กำลังสำรอง… (ราว 10–30 วินาที)'; $('bkErr').textContent = '';
+    call('backupNow').then(function(res){
+      if (S.bal) S.bal.backup = { last:res.last, auto:res.auto };
+      $('bkInfo').innerHTML = backupHtml({ last:res.last, auto:res.auto });
+      t.textContent = res.reused ? 'เพิ่งสำรองไปไม่ถึง 10 นาที ใช้สำเนาเดิม' : '✅ สำรองแล้ว';
+      toast(res.reused ? 'มีสำเนาที่เพิ่งสำรองแล้ว' : 'สำรองข้อมูลแล้ว');
+    }, function(err){
+      t.disabled = false; t.textContent = 'สำรองตอนนี้'; $('bkErr').textContent = balErrMsg(err);
+    });
+  };
+}
+
 /* ---------- หน้าตั้งค่า ---------- */
 $('btnSet').onclick = function(){
   bioAvailable().then(function(av){
@@ -2055,6 +2715,8 @@ $('btnSet').onclick = function(){
       '<button data-s="lock">🔒 <span class="grow">ล็อกแอปตอนนี้</span></button>' +
       (av ? '<button data-s="bio">👆 <span class="grow">ลายนิ้วมือ / Face ID</span><b>' + (bioOn() ? 'เปิดอยู่' : 'ปิดอยู่') + '</b></button>' : '') +
       '<button data-s="pin">🔢 <span class="grow">เปลี่ยน PIN</span></button>' +
+      '<button data-s="export">📤 <span class="grow">ส่งออกข้อมูล (CSV)</span></button>' +
+      '<button data-s="backup">🗄️ <span class="grow">สำรองข้อมูล</span></button>' +
       '<button data-s="speed">⚡ <span class="grow">ทดสอบความเร็ว</span></button>' +
       '<button data-s="wipe" class="exp">🧹 <span class="grow">ล้างการตั้งค่าเครื่องนี้</span></button></div>' +
       '<div class="err-box" id="setErr"></div>' +
@@ -2075,6 +2737,8 @@ $('btnSet').onclick = function(){
           .catch(function(err){ b.disabled = false; $('setErr').textContent = bioErrMsg(err); });
       }
       if (a === 'speed'){ closeSheet(1); return speedTest(); }
+      if (a === 'export'){ if (!S.boot) return; return openExport(); }
+      if (a === 'backup'){ if (!S.boot) return; return openBackup(); }
       if (a === 'wipe'){
         var waiting = 0; S.outbox.forEach(function(en){ waiting += entryCount(en); });
         if (!b.dataset.sure){ b.dataset.sure = '1'; b.querySelector('.grow').textContent = waiting

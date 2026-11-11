@@ -1,5 +1,5 @@
 // แคชเฉพาะไฟล์หน้าแอป (ไม่มีข้อมูลเงิน) เพื่อให้เปิดเร็ว คำขอไป Apps Script ไม่ผ่านแคช
-var CACHE = 'jodngern-3.0.0';
+var CACHE = 'jodngern-4.0.0';
 var SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './icon-180.png'];
 
 self.addEventListener('install', function (e) {
