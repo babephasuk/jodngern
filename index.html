@@ -587,6 +587,28 @@ function expenseTree(agg, catMap){
   });
   return out;
 }
+/** รายได้ -> กลุ่ม (ทำงาน/สินทรัพย์/อื่น ๆ) -> หมวดหลัก -> หมวดย่อย (สตางค์) */
+function incomeTree(agg, catMap){
+  var groups = {}, out = [];
+  Object.keys(agg || {}).forEach(function(k){
+    if (k.charAt(0) !== '+' || !agg[k]) return;
+    var id = k.slice(1), c = catMap[id], gn = c ? c.group : 'อื่น ๆ';
+    var g = groups[gn];
+    if (!g){ g = groups[gn] = { name:gn, cents:0, mains:[], idx:{} }; out.push(g); }
+    var mk = (c ? c.group + '|' + c.main : '?|' + id) + '|inc';
+    var m = g.idx[mk];
+    if (!m){ m = g.idx[mk] = { key:mk, main:c ? c.main : id, icon:c ? c.icon : '❔', cents:0, subs:[] }; g.mains.push(m); }
+    m.cents += agg[k]; g.cents += agg[k];
+    m.subs.push({ catId:id, name:c ? (c.sub === c.main ? c.main : c.sub) : id, cents:agg[k], sum3:c ? c.sum3 : '' });
+  });
+  out.forEach(function(g){
+    delete g.idx;
+    g.mains.sort(function(a, b){ return b.cents - a.cents || (a.main < b.main ? -1 : 1); });
+    g.mains.forEach(function(m){ m.subs.sort(function(a, b){ return b.cents - a.cents; }); });
+  });
+  out.sort(function(a, b){ return b.cents - a.cents; });
+  return out;
+}
 function daysIn(s, e){ return Math.round((utcOf(e) - utcOf(s)) / 86400000) + 1; }
 /** ยอดสะสมรายวันของรายการที่ pick(x) เป็นจริง ตั้งแต่วันแรกของช่วงถึงวัน upto (บาท) */
 function cumulative(list, start, upto, pick){
@@ -826,7 +848,7 @@ function csvBlobText(csv){ return '﻿' + csv; }
 
 <script>
 /* ---------- สถานะของแอป ---------- */
-var CLIENT_VERSION = '4.0.0';
+var CLIENT_VERSION = '4.1.0';
 var LOCK_AFTER_MS = 60000;   // ออกจากแอปเกิน 1 นาที กลับมาต้องปลดล็อกใหม่
 var STALE_MS = 180000;       // ข้อมูลที่จำไว้เกิน 3 นาที แสดงทันทีแล้วขอของใหม่เงียบ ๆ ตามหลัง
 var S = { boot:null, cat:{}, tab:'add', listMode:'cycle', anchor:null, custom:null, api:null, key:null, unlocked:false, started:false, hiddenAt:0,
@@ -1675,6 +1697,31 @@ function renderOverview(st){
     h += '<div class="card"><div class="empty">ยังไม่มีรายจ่ายใน' + ovWord() + 'นี้</div></div>';
   }
 
+  // รายได้ตามหมวด (แตะเพื่อดูหมวดย่อยและรายการ)
+  var itree = incomeTree(aggregate(st.cur), S.cat), incC = Math.round(f.inc * 100);
+  if (incC > 0){
+    var maxIn = 0;
+    itree.forEach(function(g){ g.mains.forEach(function(m){ if (m.cents > maxIn) maxIn = m.cents; }); });
+    h += '<div class="card"><div class="ctitle"><b>รายได้ตามหมวด ' + fmtMoney(f.inc) + '</b><span>แตะเพื่อดูหมวดย่อยและรายการ</span></div>';
+    itree.forEach(function(g){
+      h += '<div class="cgrp"><span>' + escapeHtml(g.name) + '</span><span>' + fmtMoney(g.cents / 100) + '</span></div>';
+      g.mains.forEach(function(m){
+        var single = m.subs.length === 1, isOpen = !single && S.ovOpen[m.key];
+        var tag = m.subs.length === 1 && m.subs[0].sum3 === 'เงินหารค่าบริการ' ? ' <span class="muted small">(ไม่นับเป็นรายได้จริง)</span>' : m.subs.length === 1 && m.subs[0].sum3 === 'เงินยืม (ต้องคืน)' ? ' <span class="muted small">(เงินยืม)</span>' : '';
+        h += '<button class="bar" ' + (single ? 'data-cat="' + escapeHtml(m.subs[0].catId) + '"' : 'data-main="' + escapeHtml(m.key) + '"') + '>' +
+          '<div class="top"><span class="chev">' + (single ? '' : isOpen ? '▾' : '▸') + '</span><span class="nm">' + escapeHtml(m.icon + ' ' + m.main) + tag + '</span><span class="v">' + fmtMoney(m.cents / 100) + '</span><span class="p">' + Math.round(m.cents / incC * 100) + '%</span></div>' +
+          '<div class="track" style="width:' + Math.max(1, m.cents / maxIn * 100).toFixed(1) + '%;background:var(--inc)"></div></button>';
+        if (isOpen) m.subs.forEach(function(s2){
+          h += '<button class="bar sub" data-cat="' + escapeHtml(s2.catId) + '"><div class="top"><span class="nm">' + escapeHtml(s2.name) + '</span><span class="v">' + fmtMoney(s2.cents / 100) + '</span><span class="p">' + Math.round(s2.cents / incC * 100) + '%</span></div>' +
+            '<div class="track" style="width:' + Math.max(1, s2.cents / maxIn * 100).toFixed(1) + '%;background:var(--inc)"></div></button>';
+        });
+      });
+    });
+    h += '</div>';
+  } else {
+    h += '<div class="card"><div class="empty">ยังไม่มีรายได้ใน' + ovWord() + 'นี้</div></div>';
+  }
+
   // ใช้จ่ายจริงสะสมรายวัน เทียบช่วงก่อน
   h += '<div class="card" id="ovDaily"><div class="ctitle"><b>ใช้จ่ายจริงสะสมรายวัน</b><span>เทียบ' + cmpWord + '</span></div><div class="chart"></div><div class="legend" id="ovDailyLg"></div><p class="note" id="ovDailyNote"></p><div id="ovDailyTbl"></div></div>';
   // แนวโน้ม
@@ -1863,7 +1910,8 @@ function drawTrend(data){
 function openCatList(catId){
   var st = S.ovState; if (!st || !st.cur) return;
   var c = S.cat[catId];
-  var list = viewSort(st.cur.filter(function(x){ return x.catId === catId && x.type === 'รายจ่าย'; }));
+  var ctype = c && c.type ? c.type : 'รายจ่าย';
+  var list = viewSort(st.cur.filter(function(x){ return x.catId === catId && x.type === ctype; }));
   var t = list.reduce(function(a, x){ return a + Math.round(x.amount * 100); }, 0) / 100;
   var sh = openSheet(1, '<h2>' + escapeHtml((c ? c.icon + ' ' + catLabel(c) : catId)) + '</h2>' +
     '<p class="muted small">' + escapeHtml(st.r.label) + ' · ' + list.length + ' รายการ · รวม ' + fmtMoney(t) + ' บาท</p>' +
