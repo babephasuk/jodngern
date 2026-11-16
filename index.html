@@ -262,6 +262,7 @@ details.tbl th{color:var(--muted)}
   <!-- หน้ารายการ -->
   <section id="v-list" hidden>
     <div class="chips" id="modeChips"></div>
+    <button class="ghost" id="btnSearch" style="width:100%;margin:2px 0 10px">🔍 ค้นหารายการย้อนหลัง</button>
     <div class="card">
       <div class="nav"><button id="prev" aria-label="ก่อนหน้า">‹</button><div class="lbl" id="periodLbl"></div><button id="next" aria-label="ถัดไป">›</button></div>
       <div id="customBox" class="row" style="margin-top:10px" hidden>
@@ -276,11 +277,13 @@ details.tbl th{color:var(--muted)}
   <!-- หน้าภาพรวม (เฟส 3) -->
   <section id="v-over" hidden>
     <div class="ovtop">
+      <div id="arcHint" hidden></div>
       <div class="seg" id="ovMode"><button data-m="cycle">รอบเงินเดือน</button><button data-m="month">เดือนปฏิทิน</button></div>
       <div class="card" style="margin:0">
         <div class="nav"><button id="ovPrev" aria-label="ช่วงก่อนหน้า">‹</button><div class="lbl" id="ovLbl"></div><button id="ovNext" aria-label="ช่วงถัดไป">›</button></div>
         <div class="note" id="ovSub" style="text-align:center;margin-top:6px"></div>
       </div>
+      <button class="ghost" id="btnYear" style="width:100%">📅 สรุปรายปี · เทียบแต่ละปี</button>
     </div>
     <div id="ovBody"></div>
   </section>
@@ -848,7 +851,7 @@ function csvBlobText(csv){ return '﻿' + csv; }
 
 <script>
 /* ---------- สถานะของแอป ---------- */
-var CLIENT_VERSION = '4.1.0';
+var CLIENT_VERSION = '5.0.0';
 var LOCK_AFTER_MS = 60000;   // ออกจากแอปเกิน 1 นาที กลับมาต้องปลดล็อกใหม่
 var STALE_MS = 180000;       // ข้อมูลที่จำไว้เกิน 3 นาที แสดงทันทีแล้วขอของใหม่เงียบ ๆ ตามหลัง
 var S = { boot:null, cat:{}, tab:'add', listMode:'cycle', anchor:null, custom:null, api:null, key:null, unlocked:false, started:false, hiddenAt:0,
@@ -1474,6 +1477,7 @@ function txRowHtml(x){
   var c = S.cat[x.catId];
   var meals = (x.meals || []).map(function(m){ for (var i=0;i<MEAL_LIST.length;i++) if (MEAL_LIST[i][0] === m) return MEAL_LIST[i][1]; return ''; }).join('');
   var sub = [c && c.sub !== c.main ? c.main : '', meals, x.note].filter(Boolean).join(' · ');
+  if (x.archived) sub = '🗄️ เก็บถาวร' + (sub ? ' · ' + sub : '');
   if (x.pending) sub = (x.state === 'failed' ? 'ส่งไม่สำเร็จ แตะเพื่อแก้' : x.state === 'sending' ? 'กำลังส่ง…' : 'รอส่ง') + (sub ? ' · ' + sub : '');
   var cls = 'tx' + (x.pending ? ' pending' + (x.state === 'failed' ? ' failed' : '') : '');
   return '<button class="' + cls + '" data-tx="' + escapeHtml(x.id) + '"><span class="ic">' + escapeHtml(c ? c.icon : '❔') + '</span>' +
@@ -1481,14 +1485,15 @@ function txRowHtml(x){
     '<span class="amt ' + (x.type === 'รายได้' ? 'inc' : 'exp') + '">' + (x.type === 'รายได้' ? '+' : '−') + fmtMoney(x.amount) + '</span></button>';
 }
 
-function openEdit(x, after){
+function openEdit(x, after, back){
+  if (x.archived) return openArchivedTx(x, back);
   var head = x.pending
     ? '<h2>แก้ไขรายการที่ยังไม่ได้ส่ง</h2><p class="muted small">' + (x.state === 'failed'
         ? '<span class="exp">ส่งไม่สำเร็จ: ' + escapeHtml(x.err) + '</span><br>แก้ให้ถูกแล้วกดบันทึก แอปจะส่งใหม่ให้'
         : 'รายการนี้อยู่ในเครื่องรอส่งเข้าชีต แก้หรือลบได้ก่อนส่ง') + '</p>'
     : '<h2>แก้ไขรายการ</h2>';
   openSheet(1, head + '<div class="card" id="editBox"></div>');
-  makeForm($('editBox'), x, {edit:true, prefix:'e_', onDone:function(){ closeSheet(1); after && after(); }, onClose:function(){ closeSheet(1); }});
+  makeForm($('editBox'), x, {edit:true, prefix:'e_', onDone:function(){ closeSheet(1); after && after(); back && back(); }, onClose:function(){ closeSheet(1); back && back(); }});
 }
 
 var dayDate = null, dayShown = [];
@@ -1578,6 +1583,403 @@ $('txList').addEventListener('click', function(e){
   var x = (S.lastList || []).filter(function(t){ return t.id === b.dataset.tx; })[0];
   if (x) openEdit(x);
 });
+
+/* ---------- ค้นหารายการย้อนหลัง (v4.2.0) ----------
+   ดึงรายการเป็นช่วงละไม่เกิน 1,000 วันผ่าน listTransactions เดิม (เซิร์ฟเวอร์ไม่ต้องแก้) เก็บในหน่วยความจำชุดเดียวกับหน้ารายการ
+   แล้วกรองในเครื่อง ตัวเลขไม่ถูกเก็บลงเครื่อง */
+var SEARCH_CHUNK = 1000, SEARCH_SHOW = 150, SEARCH_ALL_MAX = 12;
+var searchSeq = 0;
+
+function searchDefaults(){ return { q:'', type:'', min:'', max:'', range:'12m', from:'', to:'' }; }
+
+/** ให้ช่วง s..e อยู่ในหน่วยความจำ: ถ้าจำไว้แล้วใช้ทันที (ถ้าเก่าเกินก็ขอใหม่เงียบ ๆ แล้วเรียก onFresh) */
+function ensureRange(s, e, onFresh){
+  var at = storeCovered(S.store, s, e);
+  if (at){
+    if (Date.now() - at > STALE_MS) fetchRange(s, e).then(function(){ onFresh && onFresh(); }, function(){});
+    return Promise.resolve();
+  }
+  return fetchRange(s, e);
+}
+/** ช่วง s..e แบ่งเป็นก้อนละไม่เกิน SEARCH_CHUNK วัน (ก้อนใหม่สุดก่อน) */
+function searchChunks(s, e){
+  var out = [], cur = e;
+  while (cur >= s){
+    var cs = addDays(cur, -(SEARCH_CHUNK - 1)); if (cs < s) cs = s;
+    out.push([cs, cur]); cur = addDays(cs, -1);
+  }
+  return out;
+}
+/** โหลดช่วงที่เลือก -> Promise({ list, start, end }) */
+function searchLoad(st, onFresh){
+  var today = S.boot.today;
+  if (st.range === 'all'){
+    var end = today, low = today, n = 0;
+    var step = function(){
+      var s0 = addDays(end, -(SEARCH_CHUNK - 1));
+      return ensureRange(s0, end, onFresh).then(function(){
+        low = s0;
+        if (!localRange(s0, end).length || ++n >= SEARCH_ALL_MAX) return;   // ก้อนว่าง = ถึงจุดเริ่มของข้อมูลแล้ว
+        end = addDays(s0, -1);
+        return step();
+      });
+    };
+    return step().then(function(){ return { list:localRange(low, today), start:low, end:today }; });
+  }
+  var s, e;
+  if (st.range === 'custom'){
+    s = st.from; e = st.to;
+    if (!s || !e) return Promise.resolve(null);
+    if (s > e) return Promise.reject(new Error('วันเริ่มต้องไม่หลังวันสิ้นสุด'));
+  } else { e = today; s = addDays(today, -364); }
+  return Promise.all(searchChunks(s, e).map(function(c){ return ensureRange(c[0], c[1], onFresh); }))
+    .then(function(){ return { list:localRange(s, e), start:s, end:e }; });
+}
+function numOrNull(v){ var n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? null : n; }
+function searchFilter(list, st){
+  var toks = st.q.toLowerCase().split(/\s+/).filter(Boolean), mn = numOrNull(st.min), mx = numOrNull(st.max);
+  return list.filter(function(x){
+    if (st.type && x.type !== st.type) return false;
+    if (mn !== null && x.amount < mn) return false;
+    if (mx !== null && x.amount > mx) return false;
+    if (!toks.length) return true;
+    var c = S.cat[x.catId] || {};
+    var meals = (x.meals || []).map(function(m){ for (var i = 0; i < MEAL_LIST.length; i++) if (MEAL_LIST[i][0] === m) return MEAL_LIST[i][1]; return ''; }).join(' ');
+    var hay = [catLabel(S.cat[x.catId]), c.main, c.sub, c.group, x.note, meals, x.amount.toFixed(2)].join(' ').toLowerCase();
+    return toks.every(function(t){ return hay.indexOf(t) >= 0; });
+  });
+}
+function monthsBetween(a, b){ var p = isoParts(a), q = isoParts(b); return (q[0] - p[0]) * 12 + (q[1] - p[1]) + 1; }
+
+function searchResultHtml(res, st){
+  var hits = searchFilter(res.list, st);
+  var t = totals(hits, S.cat);
+  var first = hits.length ? hits[hits.length - 1].date : res.start;
+  var from = st.range === 'all' ? first : res.start;
+  var months = Math.max(1, daysIn(from, res.end) / 30.4375), monthsTxt = String(Math.round(months * 10) / 10);
+  var span = st.range === 'all' ? 'ทั้งหมด (ตั้งแต่ ' + thaiDate(from) + ')' : thaiDate(res.start) + ' – ' + thaiDate(res.end);
+  var h = '<p class="muted small" style="margin:10px 2px 6px">' + escapeHtml(span) + ' · พบ ' + hits.length + ' รายการ</p>';
+  if (!hits.length) return h + '<div class="empty">ไม่พบรายการที่ตรงเงื่อนไข</div>';
+  var showInc = !st.type || st.type === 'รายได้', showExp = !st.type || st.type === 'รายจ่าย';
+  h += '<div class="card"><div class="sum" style="grid-template-columns:repeat(' + ((showInc && t.inc ? 1 : 0) + (showExp && t.exp ? 1 : 0) + 1) + ',1fr)">';
+  if (showInc && t.inc) h += '<div><small>รายได้รวม</small><b class="inc">' + fmtMoney(t.inc) + '</b></div>';
+  if (showExp && t.exp) h += '<div><small>รายจ่ายรวม</small><b class="exp">' + fmtMoney(t.exp) + '</b></div>';
+  var main = (showExp && t.exp && !(showInc && t.inc)) ? t.exp : (showInc && t.inc && !(showExp && t.exp)) ? t.inc : null;
+  h += '<div><small>' + (main !== null ? 'เฉลี่ยต่อเดือน' : 'จำนวนรายการ') + '</small><b>' + (main !== null ? fmtMoney(main / months) : hits.length) + '</b></div></div>';
+  if (main !== null) h += '<p class="muted small" style="margin:8px 0 0;text-align:center">เฉลี่ยจาก ' + monthsTxt + ' เดือน (นับตามจำนวนวันของช่วง)</p>';
+  h += '</div>';
+  // แยกรายเดือน
+  var byM = {}, keys = [];
+  hits.forEach(function(x){
+    var k = x.date.slice(0, 7), m = byM[k];
+    if (!m){ m = byM[k] = { n:0, inc:0, exp:0 }; keys.push(k); }
+    m.n++; var c = Math.round(x.amount * 100);
+    if (x.type === 'รายได้') m.inc += c; else m.exp += c;
+  });
+  keys.sort().reverse();
+  h += '<details class="tbl" ' + (S.searchOpenMonths ? 'open' : '') + ' data-sm><summary>แยกรายเดือน (' + keys.length + ' เดือนที่พบ)</summary><table style="width:100%;border-collapse:collapse"><tr><th style="text-align:left">เดือน</th><th>ครั้ง</th><th style="text-align:right">' + (showExp && !showInc ? 'รายจ่าย' : showInc && !showExp ? 'รายได้' : 'รับ / จ่าย') + '</th></tr>' +
+    keys.slice(0, 60).map(function(k){
+      var m = byM[k], p = isoParts(k + '-01');
+      var v = showExp && !showInc ? fmtMoney(m.exp / 100) : showInc && !showExp ? fmtMoney(m.inc / 100) : '<span class="inc">+' + fmtMoney(m.inc / 100) + '</span> <span class="exp">−' + fmtMoney(m.exp / 100) + '</span>';
+      return '<tr><td>' + TH_MONTHS[p[1] - 1] + ' ' + (p[0] + 543) + '</td><td style="text-align:center">' + m.n + '</td><td style="text-align:right">' + v + '</td></tr>';
+    }).join('') + '</table></details>';
+  var cap = S.searchShow || SEARCH_SHOW, days = groupByDay(hits.slice(0, cap));
+  h += days.map(function(d){
+    return '<div class="daybar"><div>' + thaiDate(d.date, true) + '</div><span>' +
+      (d.inc ? '<span class="inc">+' + fmtMoney(d.inc) + '</span> ' : '') + (d.exp ? '<span class="exp">−' + fmtMoney(d.exp) + '</span>' : '') + '</span></div>' +
+      '<div class="card" style="padding:4px 10px">' + d.items.map(txRowHtml).join('') + '</div>';
+  }).join('');
+  if (hits.length > cap) h += '<button class="ghost" style="width:100%;margin-top:6px" data-more>แสดงเพิ่มอีก ' + Math.min(SEARCH_SHOW, hits.length - cap) + ' (เหลือ ' + (hits.length - cap) + ')</button>';
+  S.searchHits = hits.slice(0, cap);
+  return h;
+}
+
+function runSearch(){
+  var out = $('sOut'); if (!out) return;
+  var st = S.search, seq = ++searchSeq;
+  S.searchShow = SEARCH_SHOW;
+  var idle = !st.q.trim() && !numOrNull(st.min) && !numOrNull(st.max) && !st.type;
+  if (st.range === 'custom' && (!st.from || !st.to)){ out.innerHTML = '<div class="empty">เลือกวันเริ่มและวันสิ้นสุด</div>'; return; }
+  out.innerHTML = '<div class="card" style="padding:4px 10px">' + skeletonHtml(3) + '</div><p class="muted small" style="text-align:center">กำลังโหลดข้อมูลย้อนหลัง…</p>';
+  var draw = function(res){
+    if (seq !== searchSeq || !$('sOut')) return;
+    S.searchRes = res;
+    $('sOut').innerHTML = res ? (idle ? '<p class="muted small" style="margin:10px 2px">พิมพ์คำค้นหรือใส่เงื่อนไข เช่น "เซเว่น" หรือ "ค่าเวร" เพื่อดูยอดย้อนหลัง · ตอนนี้โหลดข้อมูลไว้ ' + res.list.length + ' รายการ (' + escapeHtml(thaiDate(res.start)) + ' – ' + escapeHtml(thaiDate(res.end)) + ')</p>' : searchResultHtml(res, st)) : '';
+  };
+  searchLoad(st, function(){   // ข้อมูลที่จำไว้เก่า ขอใหม่เสร็จแล้ววาดซ้ำเงียบ ๆ
+    if (seq !== searchSeq) return;
+    searchLoad(st).then(draw, function(){});
+  }).then(draw, function(err){
+    if (seq !== searchSeq || !$('sOut')) return;
+    $('sOut').innerHTML = '<div class="err-box">' + escapeHtml(err.message) + '</div><button class="ghost" style="margin-top:8px" data-retry="search">ลองใหม่</button>';
+  });
+}
+
+function openSearch(keep){
+  if (!S.boot) return;
+  if (!S.search) S.search = searchDefaults();
+  var st = S.search;
+  var chip = function(group, cur, items){ return '<div class="chips" data-g="' + group + '">' + items.map(function(i){ return '<button class="chip' + (cur === i[0] ? ' on' : '') + '" data-v="' + i[0] + '">' + i[1] + '</button>'; }).join('') + '</div>'; };
+  var sh = openSheet(1, '<h2>🔍 ค้นหารายการ</h2>' +
+    '<input class="field" id="sq" type="search" enterkeyhint="search" autocomplete="off" placeholder="ชื่อหมวด คำอธิบาย หรือจำนวนเงิน เช่น เซเว่น ค่าเวร" value="' + escapeHtml(st.q) + '">' +
+    '<div style="margin-top:8px">' + chip('type', st.type, [['', 'ทั้งหมด'], ['รายจ่าย', 'รายจ่าย'], ['รายได้', 'รายได้']]) + '</div>' +
+    '<div class="row" style="margin-top:6px"><input class="field" style="flex:1;min-width:0" id="sMin" inputmode="decimal" placeholder="จำนวนตั้งแต่" value="' + escapeHtml(st.min) + '"><span>–</span><input class="field" style="flex:1;min-width:0" id="sMax" inputmode="decimal" placeholder="ไม่เกิน" value="' + escapeHtml(st.max) + '"></div>' +
+    '<div style="margin-top:8px">' + chip('range', st.range, [['12m', '12 เดือนล่าสุด'], ['all', 'ทั้งหมด'], ['custom', 'กำหนดเอง']]) + '</div>' +
+    '<div class="row" id="sCustom" style="margin-top:6px" ' + (st.range === 'custom' ? '' : 'hidden') + '><input type="date" class="field" style="flex:1;min-width:0" id="sFrom" value="' + escapeHtml(st.from) + '"><span>ถึง</span><input type="date" class="field" style="flex:1;min-width:0" id="sTo" value="' + escapeHtml(st.to) + '"></div>' +
+    '<div id="sOut"></div>' +
+    '<button class="ghost" style="width:100%;margin-top:10px" id="sClose">ปิด</button>');
+  var timer;
+  var again = function(delay){ clearTimeout(timer); timer = setTimeout(runSearch, delay); };
+  sh.oninput = function(e){
+    var id = e.target.id;
+    if (id === 'sq') st.q = e.target.value; else if (id === 'sMin') st.min = e.target.value; else if (id === 'sMax') st.max = e.target.value;
+    else return;
+    again(250);
+  };
+  sh.onchange = function(e){
+    if (e.target.id === 'sFrom' || e.target.id === 'sTo'){ st.from = $('sFrom').value; st.to = $('sTo').value; again(0); }
+  };
+  sh.onclick = function(e){
+    if (e.target.id === 'sClose') return closeSheet(1);
+    var ch = e.target.closest('.chip');
+    if (ch){
+      var g = ch.parentNode.dataset.g;
+      st[g] = ch.dataset.v;
+      [].forEach.call(ch.parentNode.children, function(b){ b.classList.toggle('on', b === ch); });
+      if (g === 'range'){
+        $('sCustom').hidden = st.range !== 'custom';
+        if (st.range === 'custom' && !st.from){ st.to = S.boot.today; st.from = addDays(S.boot.today, -364); $('sFrom').value = st.from; $('sTo').value = st.to; }
+      }
+      return again(0);
+    }
+    if (e.target.closest('[data-retry]')) return runSearch();
+    if (e.target.closest('[data-more]')){ S.searchShow = (S.searchShow || SEARCH_SHOW) + SEARCH_SHOW; var sc = sh.scrollTop; $('sOut').innerHTML = searchResultHtml(S.searchRes, st); sh.scrollTop = sc; return; }
+    var b = e.target.closest('[data-tx]'); if (!b) return;
+    var x = (S.searchHits || []).filter(function(t){ return t.id === b.dataset.tx; })[0];
+    if (x) openEdit(x, null, function(){ openSearch(true); });
+  };
+  sh.addEventListener('toggle', function(e){ if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-sm')) S.searchOpenMonths = e.target.open; }, true);
+  sh.addEventListener('keydown', function(e){ if (e.key === 'Enter' && e.target.id === 'sq'){ e.preventDefault(); e.target.blur(); } });
+  runSearch();
+  if (!keep) setTimeout(function(){ var q = $('sq'); if (q) q.focus(); }, 50);
+}
+$('btnSearch').onclick = function(){ openSearch(false); };
+
+/* ---------- เวอร์ชัน 5: เก็บถาวรรายการเก่า + หน้ารายปี ---------- */
+function v5ErrMsg(err){ return err.code === 'BAD_ACTION' ? 'ส่วนนี้ต้องใช้ Code.gs เวอร์ชัน 5.0.0 (อัปเดต Apps Script แล้ว Deploy เป็น New version)' : err.message; }
+function addMonthsIso(iso, n){
+  var p = isoParts(iso), m = p[1] - 1 + n, y = p[0] + Math.floor(m / 12);
+  m = ((m % 12) + 12) % 12;
+  return y + '-' + pad2(m + 1) + '-01';
+}
+function fmtInt(n){ return Math.round(n).toLocaleString('en-US'); }
+
+/** รายการที่อยู่ในที่เก็บถาวร: ดูได้อย่างเดียว */
+function openArchivedTx(x, back){
+  var c = S.cat[x.catId];
+  var sh = openSheet(1, '<h2>รายการที่เก็บถาวร</h2><div class="card" style="padding:4px 10px">' + txRowHtml(x) + '</div>' +
+    '<p class="note">' + escapeHtml(thaiDate(x.date, true)) + ' · ' + escapeHtml(x.type) + ' · ' + escapeHtml(catLabel(c)) + '<br>' +
+    'รายการนี้ย้ายไปแท็บ "รายการเก็บถาวร" แล้ว แก้ไขหรือลบในแอปไม่ได้ ถ้าจำเป็นต้องแก้ ให้แก้ในชีตแล้วรันฟังก์ชัน rebuildMonthlySummary ในหน้า Apps Script</p>' +
+    '<button class="ghost" style="width:100%" data-a="close">ปิด</button>');
+  sh.onclick = function(e){ if (e.target.closest('[data-a="close"]')){ closeSheet(1); back && back(); } };
+}
+
+/** การ์ดเตือนบนหน้าภาพรวม เมื่อมีรายการที่เก็บถาวรได้สะสมครบราว 2 ปี */
+function drawArcHint(){
+  var el = $('arcHint'); if (!el) return;
+  var a = S.boot && S.boot.archive, snooze = LS.get('arcSnooze') || '';
+  var show = !!(a && a.suggest && !(snooze && snooze > S.boot.today));
+  el.hidden = !show;
+  el.innerHTML = show ? '<div class="card" style="margin:0"><b>📦 มีรายการเก่ากว่า 24 เดือน ' + fmtInt(a.eligible) + ' รายการ</b>' +
+    '<p class="note" style="margin:4px 0 0">ย้ายไปที่เก็บถาวรได้ ช่วยให้แอปเร็วเท่าเดิม ข้อมูลไม่หาย ยังค้นหาและดูรายปีได้</p>' +
+    '<div class="row" style="margin-top:8px"><button class="ghost" data-arc="later">ไว้ทีหลัง</button><button class="ghost" style="color:var(--brand);font-weight:700" data-arc="open">ดูรายละเอียด</button></div></div>' : '';
+}
+$('arcHint').onclick = function(e){
+  var b = e.target.closest('[data-arc]'); if (!b) return;
+  if (b.dataset.arc === 'open') return openArchive();
+  LS.set('arcSnooze', addDays(S.boot.today, 30)); drawArcHint(); toast('จะเตือนอีกครั้งใน 30 วัน');
+};
+
+function openArchive(){
+  var sh = openSheet(1, '<h2>📦 เก็บถาวรรายการเก่า</h2><div id="arcBody"><div class="card">' + skeletonHtml(3) + '</div></div>' +
+    '<div class="err-box" id="arcErr"></div><button class="ghost" style="width:100%;margin-top:10px" data-a="close">ปิด</button>');
+  var info = null, token = null, done = null;
+  var load = function(){
+    $('arcBody').innerHTML = '<div class="card">' + skeletonHtml(3) + '</div>';
+    return call('archiveInfo').then(function(r){ info = r; draw(); }, function(err){
+      if (!$('arcBody')) return;
+      $('arcBody').innerHTML = '<div class="err-box">' + escapeHtml(v5ErrMsg(err)) + '</div><button class="ghost" style="margin-top:8px" data-a="retry">ลองใหม่</button>';
+    });
+  };
+  var draw = function(){
+    if (!$('arcBody')) return;
+    var e = info.eligible, a = info.archived;
+    var h = '<p class="note" style="margin-top:0">แท็บ "รายการ" ในชีตเก็บ ' + info.keepMonths + ' เดือนเต็มล่าสุด (ตั้งแต่ ' + escapeHtml(thaiDate(info.before)) + ') ' +
+      'รายการที่เก่ากว่านั้นย้ายไปแท็บ "รายการเก็บถาวร" ได้ ข้อมูลไม่หาย ยังค้นหา ส่งออก CSV และดูในหน้ารายปีได้ แต่แก้ไขหรือลบในแอปไม่ได้</p>';
+    if (done) h += '<div class="card" style="border:1px solid var(--inc)">✅ ย้ายแล้ว ' + fmtInt(done.moved) + ' รายการ (' + escapeHtml(thaiDate(done.from)) + ' – ' + escapeHtml(thaiDate(done.to)) + ')' +
+      '<p class="note" style="margin-bottom:0">สำรองทั้งไฟล์ไว้ก่อนย้าย: ' + escapeHtml(done.backup) + '</p></div>';
+    h += '<div class="card"><div class="ctitle"><b>พร้อมเก็บถาวร</b></div>';
+    if (e.count){
+      h += '<div class="sum" style="grid-template-columns:1fr 1fr 1fr"><div><small>รายการ</small><b>' + fmtInt(e.count) + '</b></div>' +
+        '<div><small>รายได้</small><b class="inc">' + fmtMoney(e.inc) + '</b></div><div><small>รายจ่าย</small><b class="exp">' + fmtMoney(e.exp) + '</b></div></div>' +
+        '<p class="note">' + escapeHtml(thaiDate(e.from)) + ' – ' + escapeHtml(thaiDate(e.to)) + (info.suggest ? '' : ' · ยังไม่จำเป็นต้องย้ายตอนนี้ แอปจะเตือนเมื่อสะสมครบราว 2 ปี') + '</p>' +
+        '<button class="primary" style="margin-top:8px" data-a="run">📦 เก็บถาวร ' + fmtInt(e.count) + ' รายการ</button>' +
+        '<p class="note">ก่อนย้าย ระบบสำรองทั้งไฟล์ไว้ในโฟลเดอร์ "สำรอง แอปการเงินของเบ๊บ" แล้วตรวจจำนวนและยอดรวมให้ตรงกันก่อนลบออกจากแท็บรายการ ถ้ามีขั้นไหนไม่ผ่านจะหยุดทันที</p>';
+    } else {
+      h += '<p style="margin:0">ยังไม่มีรายการที่เก่ากว่า ' + info.keepMonths + ' เดือน</p>' +
+        (info.oldest ? '<p class="note">รายการแรกในแท็บคือ ' + escapeHtml(thaiDate(info.oldest)) + ' จะเริ่มเก็บถาวรได้ตั้งแต่ ' + escapeHtml(thaiDate(addMonthsIso(info.oldest, info.keepMonths + 1))) + '</p>' : '');
+    }
+    h += '</div><div class="card"><div class="ctitle"><b>ที่เก็บถาวร</b></div><p style="margin:0">' +
+      (a.count ? fmtInt(a.count) + ' รายการ (ก่อน ' + escapeHtml(thaiDate(a.before)) + ')' : 'ยังไม่มี') + '</p>' +
+      (a.last ? '<p class="note" style="margin-bottom:0">ย้ายล่าสุด ' + escapeHtml(a.last.at) + '</p>' : '') + '</div>';
+    $('arcBody').innerHTML = h;
+  };
+  var run = function(b){
+    if (!b.dataset.sure){
+      b.dataset.sure = '1';
+      b.textContent = 'แตะอีกครั้งเพื่อยืนยัน: สำรองแล้วย้าย ' + fmtInt(info.eligible.count) + ' รายการ';
+      b.style.background = 'var(--exp)';
+      return;
+    }
+    b.disabled = true; b.textContent = 'กำลังสำรองและย้าย… อย่าปิดแอป'; $('arcErr').textContent = '';
+    token = token || newToken();
+    call('runArchive', info.eligible.count, token).then(function(res){
+      token = null; done = res;
+      S.store = newStore(); S.yearly = null;
+      if (S.boot && S.boot.archive){ S.boot.archive.eligible = 0; S.boot.archive.suggest = false; S.boot.archive.archivedTotal += res.copied || 0; }
+      drawArcHint(); rerender(); toast('เก็บถาวรแล้ว ' + fmtInt(res.moved) + ' รายการ');
+      return load();
+    }, function(err){
+      if (!$('arcErr')) return;
+      $('arcErr').textContent = v5ErrMsg(err);
+      b.disabled = false; delete b.dataset.sure; b.style.background = '';
+      b.textContent = '📦 เก็บถาวร ' + fmtInt(info.eligible.count) + ' รายการ';
+    });
+  };
+  sh.onclick = function(e){
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.a === 'close') return closeSheet(1);
+    if (b.dataset.a === 'retry') return load();
+    if (b.dataset.a === 'run' && !b.disabled) return run(b);
+  };
+  load();
+}
+
+/* หน้ารายปี: ยอดรวมทั้งปี เฉลี่ยต่อเดือน (เดือนที่จบแล้ว) เทียบปีก่อน รายเดือน และหมวดรายจ่าย */
+function yearlyModel(data, today){
+  var cur = today.slice(0, 7), years = {}, order = [];
+  data.months.forEach(function(m){
+    var y = m.m.slice(0, 4), e = years[y];
+    if (!e){ e = years[y] = { y:y, agg:{}, aggDone:{}, months:[], done:0 }; order.push(y); }
+    e.agg = aggMerge(e.agg, m.cats); e.months.push(m);
+    if (m.m < cur){ e.aggDone = aggMerge(e.aggDone, m.cats); e.done++; }
+  });
+  order.sort().reverse();
+  order.forEach(function(y){
+    var e = years[y];
+    if (!e.done){ e.aggDone = e.agg; e.done = e.months.length; e.partialAvg = true; }
+    e.f = figures(e.agg, S.cat);
+    var fd = figures(e.aggDone, S.cat), avg = {};
+    Object.keys(fd).forEach(function(k){ avg[k] = fd[k] / e.done; });
+    e.avg = avg;
+  });
+  return { years:years, order:order };
+}
+function pctWord(now, prev){
+  if (!prev || !isFinite(prev) || Math.abs(prev) < 0.005) return '';
+  var p = (now - prev) / Math.abs(prev) * 100;
+  if (Math.abs(p) < 0.5) return 'ใกล้เคียงเดิม';
+  return (p > 0 ? 'สูงขึ้น ' : 'ลดลง ') + Math.abs(p).toFixed(Math.abs(p) < 10 ? 1 : 0) + '%';
+}
+function yearlyHtml(model, y, today){
+  var e = model.years[y], prevY = String(Number(y) - 1), pv = model.years[prevY];
+  var be = function(yy){ return Number(yy) + 543; };
+  var h = '<div class="chips" data-g="yr" style="margin-bottom:10px">' + model.order.map(function(yy){
+    return '<button class="chip' + (yy === y ? ' on' : '') + '" data-y="' + yy + '">' + be(yy) + '</button>'; }).join('') + '</div>';
+  var curMonth = today.slice(0, 7), hasCur = e.months.some(function(m){ return m.m === curMonth; });
+  h += '<p class="note" style="margin:0 2px 8px">ปี ' + be(y) + ' มีข้อมูล ' + e.months.length + ' เดือน' + (hasCur ? ' (รวมเดือนนี้ที่ยังไม่จบ)' : '') +
+    ' · ค่าเฉลี่ยต่อเดือนนับจาก ' + e.done + ' เดือน' + (e.partialAvg ? '' : ' ที่จบแล้ว') + (pv ? ' · เทียบกับค่าเฉลี่ยของปี ' + be(prevY) : '') + '</p>';
+  var k = function(label, key, opts){
+    opts = opts || {};
+    var w = pv ? pctWord(e.avg[key], pv.avg[key]) : '';
+    return '<div class="kpi' + (opts.wide ? ' wide' : '') + '"><small>' + (opts.color ? '<i class="key" style="background:' + opts.color + '"></i>' : '') + label + '</small>' +
+      '<b class="' + (opts.cls || '') + '">' + fmtMoney(e.f[key]) + '</b><div class="d">เฉลี่ย ' + fmtMoney(e.avg[key]) + '/เดือน' + (w ? ' · ' + w : '') + '</div></div>';
+  };
+  h += '<div class="kpis">' + k('รายได้จริง', 'realInc', { cls:'inc' }) + k('ใช้จ่ายจริง', 'spend', { color:GROUP_COLOR['ใช้จ่ายจริง'] }) +
+    k('ออมและลงทุน', 'save', { color:GROUP_COLOR['ออมและลงทุน'] }) + k('ผ่อนหนี้', 'debt', { color:GROUP_COLOR['ผ่อนหนี้'] }) +
+    k('คงเหลือ (รับทั้งหมด − จ่ายทั้งหมด)', 'net', { wide:true, cls:e.f.net < 0 ? 'exp' : '' }) + '</div>';
+  // รายเดือน
+  var rows = e.months.map(function(m){ var f = figures(m.cats, S.cat); return { m:m.m, inc:f.realInc, sp:f.spend, net:f.net }; });
+  var mx = 0; rows.forEach(function(r){ mx = Math.max(mx, r.inc, r.sp); });
+  h += '<div class="card"><div class="ctitle"><b>รายเดือน ปี ' + be(y) + '</b><span></span></div><div class="legend" style="margin:0 0 6px">' +
+    '<span><i class="sw" style="background:var(--inc)"></i>รายได้จริง</span><span><i class="sw" style="background:' + GROUP_COLOR['ใช้จ่ายจริง'] + '"></i>ใช้จ่ายจริง</span></div>' +
+    rows.map(function(r){
+      var p = isoParts(r.m + '-01');
+      return '<div class="bar" style="padding:6px 2px"><div class="top"><span class="nm">' + TH_MONTHS[p[1] - 1] + (r.m === curMonth ? ' (ยังไม่จบ)' : '') + '</span>' +
+        '<span class="v inc" style="font-weight:600">' + fmtInt(r.inc) + '</span><span class="v" style="font-weight:600">' + fmtInt(r.sp) + '</span></div>' +
+        '<div class="track" style="width:' + (mx ? Math.max(1, r.inc / mx * 100) : 1).toFixed(1) + '%;background:var(--inc)"></div>' +
+        '<div class="track" style="margin-top:2px;width:' + (mx ? Math.max(1, r.sp / mx * 100) : 1).toFixed(1) + '%;background:' + GROUP_COLOR['ใช้จ่ายจริง'] + '"></div></div>';
+    }).join('') + '<p class="note" style="margin-bottom:0">ตัวเลขเป็นบาท ปัดเศษ ซ้าย = รายได้จริง ขวา = ใช้จ่ายจริง</p></div>';
+  // หมวดรายจ่ายเฉลี่ยต่อเดือน เทียบปีก่อน
+  var mains = function(agg){
+    var out = {};
+    expenseTree(agg, S.cat).forEach(function(g){ g.mains.forEach(function(m){ out[m.key] = { key:m.key, main:m.main, icon:m.icon, group:g.name, cents:m.cents }; }); });
+    return out;
+  };
+  var cm = mains(e.aggDone), pm = pv ? mains(pv.aggDone) : {};
+  var list = Object.keys(cm).map(function(kk){ return cm[kk]; }).sort(function(a, b){ return b.cents - a.cents; }).slice(0, 15);
+  if (list.length){
+    var top = list[0].cents / e.done;
+    h += '<div class="card"><div class="ctitle"><b>หมวดรายจ่าย (เฉลี่ยต่อเดือน)</b><span>แตะเพื่อดูรายการ</span></div>' + list.map(function(m){
+      var avg = m.cents / e.done, pa = pm[m.key] ? pm[m.key].cents / pv.done : 0, w = pv ? (pa ? pctWord(avg, pa) : 'ใหม่ในปีนี้') : '';
+      return '<button class="bar" data-ycat="' + escapeHtml(m.main) + '" data-yy="' + y + '"><div class="top"><span class="nm">' + escapeHtml(m.icon + ' ' + m.main) + '</span>' +
+        '<span class="v">' + fmtMoney(avg / 100) + '</span></div>' + (w ? '<div class="note" style="margin:0">' + w + (pa ? ' (ปีก่อน ' + fmtMoney(pa / 100) + ')' : '') + '</div>' : '') +
+        '<div class="track" style="width:' + Math.max(1, avg / top * 100).toFixed(1) + '%;background:' + GROUP_COLOR[m.group] + '"></div></button>';
+    }).join('') + '</div>';
+  }
+  // เทียบทุกปี
+  h += '<div class="card"><div class="ctitle"><b>เทียบทุกปี (เฉลี่ยต่อเดือน)</b></div><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+    '<tr><th style="text-align:left">ปี</th><th style="text-align:right">รายได้จริง</th><th style="text-align:right">ใช้จ่ายจริง</th><th style="text-align:right">ออม</th></tr>' +
+    model.order.map(function(yy){
+      var x = model.years[yy];
+      return '<tr' + (yy === y ? ' style="font-weight:700"' : '') + '><td>' + be(yy) + ' <span class="muted">(' + x.done + ' ด.)</span></td><td style="text-align:right">' + fmtInt(x.avg.realInc) +
+        '</td><td style="text-align:right">' + fmtInt(x.avg.spend) + '</td><td style="text-align:right">' + fmtInt(x.avg.save) + '</td></tr>';
+    }).join('') + '</table><p class="note" style="margin-bottom:0">ปีที่ข้อมูลไม่ครบ 12 เดือนเทียบกันด้วยค่าเฉลี่ยต่อเดือน (ไม่นับเดือนที่ยังไม่จบ)</p></div>';
+  return h;
+}
+function openYearly(){
+  var sh = openSheet(1, '<h2>📅 สรุปรายปี</h2><div id="yrBody"><div class="card">' + skeletonHtml(4) + '</div></div><button class="ghost" style="width:100%;margin-top:10px" data-a="close">ปิด</button>');
+  var y = S.yearSel || S.boot.today.slice(0, 4);
+  var draw = function(){
+    if (!$('yrBody')) return;
+    var d = S.yearly.data, model = yearlyModel(d, d.today || S.boot.today);
+    if (!model.order.length){ $('yrBody').innerHTML = '<div class="empty">ยังไม่มีข้อมูล</div>'; return; }
+    if (!model.years[y]) y = model.order[0];
+    $('yrBody').innerHTML = yearlyHtml(model, y, d.today || S.boot.today);
+  };
+  var load = function(){
+    if (S.yearly && Date.now() - S.yearly.at < STALE_MS) return draw();
+    call('getYearly').then(function(r){ S.yearly = { at:Date.now(), data:r }; draw(); }, function(err){
+      if (!$('yrBody')) return;
+      $('yrBody').innerHTML = '<div class="err-box">' + escapeHtml(v5ErrMsg(err)) + '</div><button class="ghost" style="margin-top:8px" data-a="retry">ลองใหม่</button>';
+    });
+  };
+  sh.onclick = function(e){
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.a === 'close') return closeSheet(1);
+    if (b.dataset.a === 'retry') return load();
+    if (b.dataset.y){ y = S.yearSel = b.dataset.y; var sc = sh.scrollTop; draw(); sh.scrollTop = Math.min(sc, 60); return; }
+    if (b.dataset.ycat){
+      var yy = b.dataset.yy, end = yy + '-12-31';
+      S.search = searchDefaults();
+      S.search.q = b.dataset.ycat; S.search.type = 'รายจ่าย'; S.search.range = 'custom';
+      S.search.from = yy + '-01-01'; S.search.to = end > S.boot.today ? S.boot.today : end;
+      return openSearch(true);
+    }
+  };
+  load();
+}
+$('btnYear').onclick = function(){ if (S.boot) openYearly(); };
 
 /* ---------- หน้าภาพรวม (เฟส 3) ----------
    ช่วงที่เลือกและช่วงก่อนหน้า: ใช้รายการเต็มจากที่จำไว้ในหน่วยความจำ (ชุดเดียวกับหน้ารายการ รวมรายการที่รอส่ง)
@@ -2021,7 +2423,7 @@ function loadBoot(){
   return call('getBootstrap').then(function(boot){
     if (seq !== bootSeq) return;
     S.bootPending = false;
-    S.bootLive = true; S.bootAt = Date.now();
+    S.bootLive = true; S.bootAt = Date.now(); setTimeout(drawArcHint, 0);
     if (dayDate && S.boot && dayDate === S.boot.today && boot.today !== S.boot.today) dayDate = null;
     var pendTpl = S.outbox.filter(function(en){ return en.kind === 'tpl'; }).pop();
     if (pendTpl) boot.template = templateLocal(pendTpl.rows, catMap(boot.cats));
@@ -2765,6 +3167,7 @@ $('btnSet').onclick = function(){
       '<button data-s="pin">🔢 <span class="grow">เปลี่ยน PIN</span></button>' +
       '<button data-s="export">📤 <span class="grow">ส่งออกข้อมูล (CSV)</span></button>' +
       '<button data-s="backup">🗄️ <span class="grow">สำรองข้อมูล</span></button>' +
+      '<button data-s="archive">📦 <span class="grow">เก็บถาวรรายการเก่า</span>' + (S.boot && S.boot.archive && S.boot.archive.suggest ? '<b class="exp">ถึงเวลาแล้ว</b>' : '') + '</button>' +
       '<button data-s="speed">⚡ <span class="grow">ทดสอบความเร็ว</span></button>' +
       '<button data-s="wipe" class="exp">🧹 <span class="grow">ล้างการตั้งค่าเครื่องนี้</span></button></div>' +
       '<div class="err-box" id="setErr"></div>' +
@@ -2787,6 +3190,7 @@ $('btnSet').onclick = function(){
       if (a === 'speed'){ closeSheet(1); return speedTest(); }
       if (a === 'export'){ if (!S.boot) return; return openExport(); }
       if (a === 'backup'){ if (!S.boot) return; return openBackup(); }
+      if (a === 'archive'){ if (!S.boot) return; return openArchive(); }
       if (a === 'wipe'){
         var waiting = 0; S.outbox.forEach(function(en){ waiting += entryCount(en); });
         if (!b.dataset.sure){ b.dataset.sure = '1'; b.querySelector('.grow').textContent = waiting
