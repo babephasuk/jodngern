@@ -231,7 +231,12 @@ details.tbl th{color:var(--muted)}
 .bsin label{flex:1;min-width:0}
 .bsin .nm{display:block;font-weight:600}
 .bsin small{display:block;color:var(--muted);font-size:12px}
-.bsin .field{width:42%;flex:none;text-align:right;font-weight:700;padding:10px}
+.bsin{flex-wrap:wrap}
+.bsin .bsamt{display:flex;gap:6px;width:62%;flex:none}
+.bsin .bsamt .field{flex:1;min-width:0;width:auto;text-align:right;font-weight:700;padding:10px}
+.bsin .bsamt .op{flex:none;width:40px;border:1px solid var(--line);border-radius:12px;font-size:22px;font-weight:700;line-height:1;background:var(--card);color:var(--ink);padding:0}
+.bsin .bscalc{width:100%;text-align:right;font-size:13px;margin-top:-2px}
+.bsin .bscalc:empty{display:none}
 .bsin.chg{background:var(--brand-soft)}
 .bsin.bad .field{border-color:var(--exp)}
 .ghost.exp{color:var(--exp)}
@@ -313,7 +318,7 @@ var TH_DAYS = ['อา.','จ.','อ.','พ.','พฤ.','ศ.','ส.'];
 var MEAL_LIST = [['เช้า','☀️'],['กลางวัน','🌞'],['เย็น','🌙']];
 
 /** "120+45-10" -> {ok:true, value:155}; คิดเป็นสตางค์ทั้งหมดเพื่อไม่ให้ทศนิยมเพี้ยน */
-function parseAmount(raw){
+function parseAmount(raw, allowZero){
   var s = String(raw == null ? '' : raw).replace(/[,\s฿]/g,'').replace(/[−–—]/g,'-').replace(/＋/g,'+');
   if (!s) return {ok:false, empty:true, error:''};
   if (!/^[+-]?\d*\.?\d*([+-]\d*\.?\d*)*$/.test(s)) return {ok:false, error:'ใช้ได้เฉพาะตัวเลข จุดทศนิยม + และ -'};
@@ -328,7 +333,8 @@ function parseAmount(raw){
     var c = Number(m[2] || '0') * 100 + Number((frac + '00').slice(0,2));
     cents += (m[1] === '-' ? -c : c);
   }
-  if (cents <= 0) return {ok:false, error:'ผลรวมต้องมากกว่า 0'};
+  if (allowZero && cents < 0) return {ok:false, error:'ผลรวมติดลบไม่ได้'};
+  if (cents <= 0 && !(allowZero && cents === 0)) return {ok:false, error:'ผลรวมต้องมากกว่า 0'};
   if (cents > 1000000000) return {ok:false, error:'จำนวนเงินสูงผิดปกติ'};
   return {ok:true, value:cents/100, cents:cents, isExpr: terms.length > 1};
 }
@@ -851,7 +857,7 @@ function csvBlobText(csv){ return '﻿' + csv; }
 
 <script>
 /* ---------- สถานะของแอป ---------- */
-var CLIENT_VERSION = '5.0.0';
+var CLIENT_VERSION = '5.1.0';
 var LOCK_AFTER_MS = 60000;   // ออกจากแอปเกิน 1 นาที กลับมาต้องปลดล็อกใหม่
 var STALE_MS = 180000;       // ข้อมูลที่จำไว้เกิน 3 นาที แสดงทันทีแล้วขอของใหม่เงียบ ๆ ตามหลัง
 var S = { boot:null, cat:{}, tab:'add', listMode:'cycle', anchor:null, custom:null, api:null, key:null, unlocked:false, started:false, hiddenAt:0,
@@ -2804,11 +2810,11 @@ function netChart(el, pts){
   svg.addEventListener('pointerleave', function(ev){ if (ev.pointerType === 'mouse'){ tip.hidden = true; xh.setAttribute('visibility', 'hidden'); } });
 }
 
-/** ยอดงบดุล: 0 ได้ (ปิดหนี้แล้ว) */
+/** ยอดงบดุล: 0 ได้ (ปิดหนี้แล้ว) พิมพ์บวก/ลบได้เหมือนช่องจำนวนเงิน เช่น 132992.63+700 (ผลรวมต้องไม่ติดลบ) */
 function parseBal(raw){
   var s = String(raw == null ? '' : raw).trim();
   if (/^[0.,\s]+$/.test(s) && /0/.test(s)) return { ok:true, value:0, cents:0 };
-  return parseAmount(s);
+  return parseAmount(s, true);
 }
 
 /** หน้าอัปเดตยอดงบดุล: ใส่ยอดล่าสุดไว้ให้ แก้เฉพาะที่เปลี่ยน บันทึกเฉพาะรายการที่ยอดต่างจากเดิม */
@@ -2844,12 +2850,15 @@ function openBalUpdate(opt){
     var r = cur.last[it.id], v = vals[it.id] !== undefined ? vals[it.id] : (r ? String(r.amount) : '');
     return '<div class="bsin" data-row="' + escapeHtml(it.id) + '"><label for="bu_' + escapeHtml(it.id) + '"><span class="nm">' + escapeHtml(it.name) + '</span>' +
       '<small>' + (r ? 'ล่าสุด ' + fmtMoney(r.amount) + ' · ' + escapeHtml(thaiDate(r.date)) : 'ยังไม่มียอด') + (it.side === 'หนี้สิน' ? ' · ยอดหนี้คงค้าง' : '') + '</small></label>' +
-      '<input class="field" id="bu_' + escapeHtml(it.id) + '" inputmode="decimal" autocomplete="off" data-id="' + escapeHtml(it.id) + '" value="' + escapeHtml(v) + '" placeholder="0"></div>';
+      '<div class="bsamt"><input class="field" id="bu_' + escapeHtml(it.id) + '" inputmode="decimal" autocomplete="off" data-id="' + escapeHtml(it.id) + '" value="' + escapeHtml(v) + '" placeholder="0">' +
+        '<button type="button" class="op" data-bop="+" data-bid="' + escapeHtml(it.id) + '" aria-label="บวกจากยอดเดิม">＋</button>' +
+        '<button type="button" class="op" data-bop="-" data-bid="' + escapeHtml(it.id) + '" aria-label="ลบจากยอดเดิม">−</button></div>' +
+      '<div class="bscalc" id="bc_' + escapeHtml(it.id) + '"></div></div>';
   }
   function render(){
     var list = items(), h = '<h2>' + (opt.only ? 'อัปเดตยอด ' + escapeHtml(list[0] ? list[0].name : '') : 'อัปเดตยอดงบดุล') + '</h2>' +
       '<div class="label">วันที่ของยอด</div><input type="date" class="field" id="buDate" max="' + today + '" value="' + dateVal + '">' +
-      (opt.only ? '' : '<p class="note">ใส่ยอดล่าสุดไว้ให้แล้ว แก้เฉพาะรายการที่ยอดเปลี่ยน รายการที่ไม่แก้จะไม่ถูกบันทึกซ้ำ · ใส่ 0 ได้เมื่อปิดหนี้หรือเงินหมด</p>');
+      (opt.only ? '' : '<p class="note">ใส่ยอดล่าสุดไว้ให้แล้ว แก้เฉพาะรายการที่ยอดเปลี่ยน รายการที่ไม่แก้จะไม่ถูกบันทึกซ้ำ · กด ＋ หรือ − ข้างช่องแล้วพิมพ์จำนวน เพื่อบวก/ลบจากยอดในช่อง (เช่น 132992.63+700) · ใส่ 0 ได้เมื่อปิดหนี้หรือเงินหมด</p>');
     BS_GROUPS.forEach(function(g){
       var rows = list.filter(function(it){ return it.group === g; });
       if (!rows.length) return;
@@ -2866,6 +2875,17 @@ function openBalUpdate(opt){
     };
     sh.onchange = function(e){ if (e.target.id === 'buHidden'){ showHidden = e.target.checked; render(); } };
     sh.onclick = function(e){
+      var ob = e.target.closest && e.target.closest('button[data-bop]');
+      if (ob){
+        var bid = ob.dataset.bid, el = document.getElementById('bu_' + bid);
+        if (!el) return;
+        el.value = String(el.value || '').replace(/[+\-−]$/, '') + ob.dataset.bop;   // เหมือนปุ่มในช่องกรอกรายจ่าย: ต่อเครื่องหมายท้ายตัวเลขที่พิมพ์ไว้
+        vals[bid] = el.value;
+        el.focus();
+        try { el.setSelectionRange(el.value.length, el.value.length); } catch (x) {}
+        update();
+        return;
+      }
       if (e.target.id === 'buClose') return closeSheet(opt.only ? 2 : 1);
       if (e.target.id === 'buSave') return save(e.target);
     };
@@ -2878,6 +2898,8 @@ function openBalUpdate(opt){
       var p = raw !== undefined && String(raw).trim() ? parseBal(raw) : null;
       row.classList.toggle('chg', !!(p && p.ok && p.cents !== curC(id)));
       row.classList.toggle('bad', !!(p && !p.ok));
+      var cb = document.getElementById('bc_' + id);
+      if (cb) cb.innerHTML = p && p.ok && p.isExpr ? '= <b>' + fmtMoney(p.value) + '</b> บาท' : '';
     });
     var d = delta(st.net, cur.net);
     box.innerHTML = st.changed.length
